@@ -1,0 +1,6 @@
+{
+  "name": "Church Management App",
+  "description": "Clean and minimalist church management desktop UI built with React and Tailwind CSS",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
