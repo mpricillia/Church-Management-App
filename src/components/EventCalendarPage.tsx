@@ -435,7 +435,10 @@ export default function EventCalendarPage() {
 
       {/* Event Detail Modal */}
       {isDetailModalOpen && selectedEventDetail && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
+        <div 
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm"
+          onKeyDown={(e) => { if (e.key === 'Escape') setIsDetailModalOpen(false); }}
+        >
           <div className="bg-white rounded-2xl w-full max-w-sm shadow-xl border border-gray-100 overflow-hidden">
             <div className="px-6 py-5 border-b border-gray-100 flex items-center justify-between">
               <h3 className="text-lg font-bold text-gray-900">Detail Event</h3>
@@ -521,7 +524,10 @@ export default function EventCalendarPage() {
 
       {/* Simulasi Modal Form (CRUD Event) */}
       {isModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
+        <div 
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm"
+          onKeyDown={(e) => { if (e.key === 'Escape') setIsModalOpen(false); }}
+        >
           <div className="bg-white rounded-2xl w-full max-w-md shadow-xl border border-gray-100 overflow-hidden">
             {/* Modal Header */}
             <div className="px-6 py-4 border-b border-gray-100 flex items-center justify-between">

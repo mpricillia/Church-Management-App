@@ -38,6 +38,12 @@ function initDb() {
   db.pragma('foreign_keys = ON');
 
   db.exec(`
+    CREATE TABLE IF NOT EXISTS komsel (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      nama_komsel VARCHAR NOT NULL,
+      kode_warna VARCHAR NOT NULL DEFAULT '#6B7280'
+    );
+
     CREATE TABLE IF NOT EXISTS jemaat (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       qr_code_id TEXT UNIQUE,
@@ -95,130 +101,153 @@ function initDb() {
   `);
   db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_attendances_event_jemaat ON attendances(event_id, jemaat_id)');
 
+  // Kolom lama yang mungkin belum ada (migrasi database existing)
   addColumnIfMissing('jemaat', 'qr_code_id', 'TEXT');
   addColumnIfMissing('jemaat', 'address', 'TEXT');
   addColumnIfMissing('jemaat', 'birth_date', 'TEXT');
   addColumnIfMissing('jemaat', 'created_at', 'TEXT');
   addColumnIfMissing('events', 'title', 'TEXT');
   addColumnIfMissing('events', 'created_at', 'TEXT');
+
+  // Kolom baru untuk fitur Komsel
+  addColumnIfMissing('jemaat', 'pronouns', 'VARCHAR');
+  addColumnIfMissing('jemaat', 'tanggal_nikah', 'TEXT');
+  addColumnIfMissing('jemaat', 'tanggal_baptis', 'TEXT');
+  addColumnIfMissing('jemaat', 'catatan', 'TEXT');
+  addColumnIfMissing('jemaat', 'komsel_id', 'INTEGER REFERENCES komsel(id) ON DELETE SET NULL');
+
   db.prepare("UPDATE jemaat SET qr_code_id = qrId WHERE qr_code_id IS NULL AND qrId IS NOT NULL").run();
   db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_jemaat_qr_code_id ON jemaat(qr_code_id) WHERE qr_code_id IS NOT NULL');
   db.prepare("UPDATE events SET title = name WHERE title IS NULL").run();
   db.prepare("UPDATE jemaat SET created_at = CURRENT_TIMESTAMP WHERE created_at IS NULL").run();
   db.prepare("UPDATE events SET created_at = CURRENT_TIMESTAMP WHERE created_at IS NULL").run();
-    const adminUsername = process.env.ROCK_ADMIN_USERNAME || 'admin';
-    const adminPassword = process.env.ROCK_ADMIN_PASSWORD || 'rocklmj123';
-    const adminPin = process.env.ROCK_ADMIN_PIN || '1234';
 
-    const configuredAdmin = db.prepare('SELECT id FROM admins WHERE username = ?').get(adminUsername);
-    if (configuredAdmin) {
-      db.prepare('UPDATE admins SET password_hash = ?, pin = ? WHERE id = ?').run(
-        hashSecret(adminPassword), hashSecret(adminPin), configuredAdmin.id
-      );
-    } else {
-      const legacyAdmin = db.prepare('SELECT id FROM admins WHERE username = ? LIMIT 1').get('admin');
-      if (legacyAdmin) {
-        db.prepare('UPDATE admins SET username = ?, password_hash = ?, pin = ? WHERE id = ?').run(
-          adminUsername, hashSecret(adminPassword), hashSecret(adminPin), legacyAdmin.id
-        );
-      } else {
-        db.prepare('INSERT INTO admins (username, password_hash, pin) VALUES (?, ?, ?)').run(
-          adminUsername, hashSecret(adminPassword), hashSecret(adminPin)
-        );
-      }
-    }
+  // Seed data komsel default jika tabel masih kosong
+  const komselCount = db.prepare('SELECT COUNT(*) as cnt FROM komsel').get();
+  if (komselCount.cnt === 0) {
+    const seedKomsel = db.prepare('INSERT INTO komsel (nama_komsel, kode_warna) VALUES (?, ?)');
+    [
+      ['Adulam', '#3B82F6'],
+      ['Betlehem 1', '#10B981'],
+      ['Betlehem 2', '#059669'],
+      ['Bethel', '#F59E0B'],
+      ['Bukit Sion', '#D97706'],
+      ['Efata', '#8B5CF6'],
+      ['Exousia (1)', '#EC4899'],
+      ['Exousia (2) Kuliah', '#DB2777'],
+      ['Quiver', '#6366F1'],
+      ['Exousia (3)', '#4F46E5'],
+      ['Filadelfia', '#14B8A6'],
+      ['Galilea 1', '#06B6D4'],
+      ['Galilea 2', '#0891B2'],
+      ['Galilea 3', '#0284C7'],
+      ['Galilea 4', '#0369A1'],
+      ['Gosyen', '#EAB308'],
+      ['Hineni', '#F97316'],
+      ['Nazareth', '#EF4444'],
+      ['Purim', '#A855F7'],
+      ['Pison', '#D946EF'],
+      ['Obed Edom', '#84CC16'],
+    ].forEach(([nama, warna]) => seedKomsel.run(nama, warna));
   }
 
-  module.exports = {
-    initDb,
-    getEvents: () => db.prepare('SELECT * FROM events').all().map(e => ({...e, is_locked: e.is_locked === 1})),
-    getAllEvents: ({ from, to } = {}) => {
-      let query = 'SELECT *, COALESCE(title, name) AS title FROM events WHERE 1 = 1';
-      const params = [];
-      if (from) { query += ' AND date >= ?'; params.push(from); }
-      if (to) { query += ' AND date <= ?'; params.push(to); }
-      query += ' ORDER BY date ASC, time ASC, created_at ASC';
-      return db.prepare(query).all(...params).map(event => ({ ...event, is_locked: event.is_locked === 1 }));
-    },
-    getUpcomingEvents: (limit = 5) => db.prepare(`
-      SELECT *, COALESCE(title, name) AS title
-      FROM events
-      WHERE date >= date('now')
-      ORDER BY date ASC, time ASC, created_at ASC
-      LIMIT ?
-    `).all(Math.max(0, Math.min(Number(limit) || 5, 5))).map(event => ({ ...event, is_locked: event.is_locked === 1 })),
-    scanAttendance: (eventId, qrCodeId) => recordAttendance(eventId, qrCodeId, 'qr'),
-    manualAddAttendance: (eventId, jemaatId) => recordAttendance(eventId, jemaatId, 'id'),
-    getEventSummary: (eventId) => {
-      const event = db.prepare('SELECT id, COALESCE(title, name) AS title, date FROM events WHERE id = ?').get(eventId);
-      if (!event) throw new Error('Event not found');
-      const rows = db.prepare(`
-        SELECT CASE WHEN j.category IN ('Tetap', 'Jemaat') THEN 'Jemaat Tetap' ELSE 'Guest' END AS category,
-          COUNT(a.id) AS total
-        FROM attendances a
-        INNER JOIN jemaat j ON j.id = a.jemaat_id
-        WHERE a.event_id = ?
-        GROUP BY CASE WHEN j.category IN ('Tetap', 'Jemaat') THEN 'Jemaat Tetap' ELSE 'Guest' END
-      `).all(eventId);
-      const totals = Object.fromEntries(rows.map(row => [row.category, row.total]));
-      return {
-        event_id: event.id,
-        event_title: event.title,
-        event_date: event.date,
-        total_attendance: rows.reduce((sum, row) => sum + row.total, 0),
-        by_category: {
-          'Jemaat Tetap': totals['Jemaat Tetap'] || 0,
-          Guest: totals.Guest || 0
-        }
-      };
-    },
-    getJemaatHistory: (jemaatId) => {
-      const member = db.prepare('SELECT id, name, COALESCE(qr_code_id, qrId) AS qr_code_id FROM jemaat WHERE id = ?').get(jemaatId);
-      if (!member) throw new Error('Jemaat not found');
-      const history = db.prepare(`
-        SELECT e.id AS event_id, COALESCE(e.title, e.name) AS event_title, e.date AS event_date,
-          e.time, a.scan_timestamp
-        FROM attendances a
-        INNER JOIN events e ON e.id = a.event_id
-        WHERE a.jemaat_id = ?
-        ORDER BY e.date DESC, e.time DESC, a.scan_timestamp DESC
-      `).all(jemaatId);
-      return { jemaat_id: member.id, name: member.name, qr_code_id: member.qr_code_id, history };
-    },
-    getAttendanceRanking: (startDate, endDate) => {
-      let query = `
-        SELECT id, name, qr_code_id, category, SUM(total) as total_attendance
-        FROM (
-          SELECT j.id, j.name, COALESCE(j.qr_code_id, j.qrId) AS qr_code_id, j.category, COUNT(a.id) as total
-          FROM jemaat j
-          JOIN attendances a ON j.id = a.jemaat_id
-          JOIN events e ON a.event_id = e.id
-          WHERE 1=1
-      `;
-      const params = [];
-      if (startDate) { query += " AND e.date >= ?"; params.push(startDate); }
-      if (endDate) { query += " AND e.date <= ?"; params.push(endDate); }
-      query += `
-          GROUP BY j.id
-  
-          UNION ALL
-  
-          SELECT j.id, j.name, COALESCE(j.qr_code_id, j.qrId) AS qr_code_id, j.category, COUNT(a.id) as total
-          FROM jemaat j
-          JOIN attendance a ON j.id = a.jemaatId
-          JOIN events e ON a.eventId = e.id
-          WHERE 1=1
-      `;
-      if (startDate) { query += " AND e.date >= ?"; params.push(startDate); }
-      if (endDate) { query += " AND e.date <= ?"; params.push(endDate); }
-      query += `
-          GROUP BY j.id
-        )
-        GROUP BY id
-        ORDER BY total_attendance DESC
-      `;
-      return db.prepare(query).all(...params);
-    },
+  // FIX BUG: Admin hanya dibuat sekali, tidak di-overwrite setiap kali app dibuka
+  const adminUsername = process.env.ROCK_ADMIN_USERNAME || 'admin';
+  const adminPassword = process.env.ROCK_ADMIN_PASSWORD || 'rocklmj123';
+  const adminPin = process.env.ROCK_ADMIN_PIN || '1234';
+
+  const existingAdmin = db.prepare('SELECT id FROM admins LIMIT 1').get();
+  if (!existingAdmin) {
+    // Hanya buat admin pertama kali, tidak pernah overwrite
+    db.prepare('INSERT INTO admins (username, password_hash, pin) VALUES (?, ?, ?)').run(
+      adminUsername, hashSecret(adminPassword), hashSecret(adminPin)
+    );
+  }
+}
+
+module.exports = {
+  initDb,
+  getEvents: () => db.prepare('SELECT * FROM events').all().map(e => ({...e, is_locked: e.is_locked === 1})),
+  getAllEvents: ({ from, to } = {}) => {
+    let query = 'SELECT *, COALESCE(title, name) AS title FROM events WHERE 1 = 1';
+    const params = [];
+    if (from) { query += ' AND date >= ?'; params.push(from); }
+    if (to) { query += ' AND date <= ?'; params.push(to); }
+    query += ' ORDER BY date ASC, time ASC, created_at ASC';
+    return db.prepare(query).all(...params).map(event => ({ ...event, is_locked: event.is_locked === 1 }));
+  },
+  getUpcomingEvents: (limit = 5) => db.prepare(`
+    SELECT *, COALESCE(title, name) AS title
+    FROM events
+    WHERE date >= date('now')
+    ORDER BY date ASC, time ASC, created_at ASC
+    LIMIT ?
+  `).all(Math.max(0, Math.min(Number(limit) || 5, 5))).map(event => ({ ...event, is_locked: event.is_locked === 1 })),
+  scanAttendance: (eventId, qrCodeId) => recordAttendance(eventId, qrCodeId, 'qr'),
+  manualAddAttendance: (eventId, jemaatId) => recordAttendance(eventId, jemaatId, 'id'),
+  getEventSummary: (eventId) => {
+    const event = db.prepare('SELECT id, COALESCE(title, name) AS title, date FROM events WHERE id = ?').get(eventId);
+    if (!event) throw new Error('Event not found');
+    const rows = db.prepare(`
+      SELECT CASE WHEN j.category IN ('Tetap', 'Jemaat') THEN 'Jemaat Tetap' ELSE 'Guest' END AS category,
+        COUNT(a.id) AS total
+      FROM attendances a
+      INNER JOIN jemaat j ON j.id = a.jemaat_id
+      WHERE a.event_id = ?
+      GROUP BY CASE WHEN j.category IN ('Tetap', 'Jemaat') THEN 'Jemaat Tetap' ELSE 'Guest' END
+    `).all(eventId);
+    const totals = Object.fromEntries(rows.map(row => [row.category, row.total]));
+    return {
+      event_id: event.id, event_title: event.title, event_date: event.date,
+      total_attendance: rows.reduce((sum, row) => sum + row.total, 0),
+      by_category: { 'Jemaat Tetap': totals['Jemaat Tetap'] || 0, Guest: totals.Guest || 0 }
+    };
+  },
+  getJemaatHistory: (jemaatId) => {
+    const member = db.prepare('SELECT id, name, COALESCE(qr_code_id, qrId) AS qr_code_id FROM jemaat WHERE id = ?').get(jemaatId);
+    if (!member) throw new Error('Jemaat not found');
+    const history = db.prepare(`
+      SELECT e.id AS event_id, COALESCE(e.title, e.name) AS event_title, e.date AS event_date,
+        e.time, a.scan_timestamp
+      FROM attendances a
+      INNER JOIN events e ON e.id = a.event_id
+      WHERE a.jemaat_id = ?
+      ORDER BY e.date DESC, e.time DESC, a.scan_timestamp DESC
+    `).all(jemaatId);
+    return { jemaat_id: member.id, name: member.name, qr_code_id: member.qr_code_id, history };
+  },
+  getAttendanceRanking: (startDate, endDate) => {
+    let query = `
+      SELECT id, name, qr_code_id, category, SUM(total) as total_attendance
+      FROM (
+        SELECT j.id, j.name, COALESCE(j.qr_code_id, j.qrId) AS qr_code_id, j.category, COUNT(a.id) as total
+        FROM jemaat j
+        JOIN attendances a ON j.id = a.jemaat_id
+        JOIN events e ON a.event_id = e.id
+        WHERE 1=1
+    `;
+    const params = [];
+    if (startDate) { query += " AND e.date >= ?"; params.push(startDate); }
+    if (endDate) { query += " AND e.date <= ?"; params.push(endDate); }
+    query += `
+        GROUP BY j.id
+        UNION ALL
+        SELECT j.id, j.name, COALESCE(j.qr_code_id, j.qrId) AS qr_code_id, j.category, COUNT(a.id) as total
+        FROM jemaat j
+        JOIN attendance a ON j.id = a.jemaatId
+        JOIN events e ON a.eventId = e.id
+        WHERE 1=1
+    `;
+    if (startDate) { query += " AND e.date >= ?"; params.push(startDate); }
+    if (endDate) { query += " AND e.date <= ?"; params.push(endDate); }
+    query += `
+        GROUP BY j.id
+      )
+      GROUP BY id
+      ORDER BY total_attendance DESC
+    `;
+    return db.prepare(query).all(...params);
+  },
   getMonthlyRecap: (month, year) => {
     const numericMonth = Number(month);
     const numericYear = Number(year);
@@ -244,6 +273,7 @@ function initDb() {
     return { month: numericMonth, year: numericYear, events: rows };
   },
   createEvent: (event) => {
+
     const id = event.id || `event-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`;
     const title = event.title || event.name;
     if (!title || !event.date) throw new Error('Event title and date are required');
@@ -377,22 +407,63 @@ function initDb() {
     return Boolean(admin && verifySecret(pin, admin.pin));
   },
   lockEvent: (eventId, locked) => db.prepare('UPDATE events SET is_locked = ? WHERE id = ?').run(locked ? 1 : 0, eventId).changes > 0,
-  getAllJemaat: ({ search = '', category = '', birthMonth = '' } = {}) => {
-    let query = 'SELECT *, COALESCE(qr_code_id, qrId) AS qr_code_id FROM jemaat WHERE 1 = 1';
+  getAllKomsel: () => db.prepare('SELECT * FROM komsel ORDER BY nama_komsel COLLATE NOCASE').all(),
+  createKomsel: ({ nama_komsel, kode_warna }) => {
+    if (!nama_komsel || !nama_komsel.trim()) throw new Error('Nama komsel tidak boleh kosong');
+    const result = db.prepare('INSERT INTO komsel (nama_komsel, kode_warna) VALUES (?, ?)').run(
+      nama_komsel.trim(), kode_warna || '#6B7280'
+    );
+    return db.prepare('SELECT * FROM komsel WHERE id = ?').get(result.lastInsertRowid);
+  },
+  getAllJemaat: ({ search = '', category = '', birthMonth = '', komselId = '' } = {}) => {
+    let query = `
+      SELECT j.*, COALESCE(j.qr_code_id, j.qrId) AS qr_code_id,
+        k.nama_komsel, k.kode_warna
+      FROM jemaat j
+      LEFT JOIN komsel k ON j.komsel_id = k.id
+      WHERE 1 = 1
+    `;
     const params = [];
-    if (search) { query += ' AND (name LIKE ? OR phone LIKE ?)'; params.push(`%${search}%`, `%${search}%`); }
-    if (category) { query += ' AND category = ?'; params.push(category); }
-    if (birthMonth) { query += " AND CAST(strftime('%m', birth_date) AS INTEGER) = ?"; params.push(Number(birthMonth)); }
-    return db.prepare(`${query} ORDER BY name COLLATE NOCASE`).all(...params);
+    if (search) { query += ' AND (j.name LIKE ? OR j.phone LIKE ?)'; params.push(`%${search}%`, `%${search}%`); }
+    if (category) { query += ' AND j.category = ?'; params.push(category); }
+    if (birthMonth) { query += " AND CAST(strftime('%m', j.birth_date) AS INTEGER) = ?"; params.push(Number(birthMonth)); }
+    if (komselId === 'null') {
+      query += ' AND j.komsel_id IS NULL AND j.category = \'Tetap\'';
+    } else if (komselId) {
+      query += ' AND j.komsel_id = ?'; params.push(Number(komselId));
+    }
+    return db.prepare(`${query} ORDER BY j.name COLLATE NOCASE`).all(...params);
   },
   createJemaat: (member) => {
-    const result = db.prepare(`INSERT INTO jemaat (qr_code_id, qrId, name, category, phone, address, birth_date, photo)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).run(member.qr_code_id, member.qr_code_id, member.name,
-      member.category || 'Tetap', member.phone || null, member.address || null, member.birth_date || null, member.photo || null);
-    return db.prepare('SELECT * FROM jemaat WHERE id = ?').get(result.lastInsertRowid);
+    const result = db.prepare(`
+      INSERT INTO jemaat (qr_code_id, qrId, name, category, phone, address, birth_date, photo,
+        pronouns, tanggal_nikah, tanggal_baptis, catatan, komsel_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      member.qr_code_id, member.qr_code_id, member.name,
+      member.category || 'Tetap', member.phone || null, member.address || null,
+      member.birth_date || null, member.photo || null,
+      member.pronouns || null, member.tanggal_nikah || null,
+      member.tanggal_baptis || null, member.catatan || null,
+      member.komsel_id || null
+    );
+    return db.prepare(`
+      SELECT j.*, COALESCE(j.qr_code_id, j.qrId) AS qr_code_id, k.nama_komsel, k.kode_warna
+      FROM jemaat j LEFT JOIN komsel k ON j.komsel_id = k.id WHERE j.id = ?
+    `).get(result.lastInsertRowid);
   },
-  updateJemaat: (id, member) => db.prepare(`UPDATE jemaat SET qr_code_id = ?, qrId = ?, name = ?, category = ?, phone = ?, address = ?, birth_date = ?, photo = ? WHERE id = ?`)
-    .run(member.qr_code_id, member.qr_code_id, member.name, member.category || 'Tetap', member.phone || null, member.address || null, member.birth_date || null, member.photo || null, id).changes > 0,
+  updateJemaat: (id, member) => db.prepare(`
+    UPDATE jemaat SET qr_code_id = ?, qrId = ?, name = ?, category = ?, phone = ?,
+      address = ?, birth_date = ?, photo = ?,
+      pronouns = ?, tanggal_nikah = ?, tanggal_baptis = ?, catatan = ?, komsel_id = ?
+    WHERE id = ?
+  `).run(
+    member.qr_code_id, member.qr_code_id, member.name, member.category || 'Tetap',
+    member.phone || null, member.address || null, member.birth_date || null, member.photo || null,
+    member.pronouns || null, member.tanggal_nikah || null,
+    member.tanggal_baptis || null, member.catatan || null,
+    member.komsel_id || null, id
+  ).changes > 0,
   deleteJemaat: (id) => db.prepare('DELETE FROM jemaat WHERE id = ?').run(id).changes > 0,
   importJemaat: (members) => db.transaction((rows) => {
     const insert = db.prepare(`INSERT INTO jemaat (qr_code_id, qrId, name, category, phone, address, birth_date)
@@ -403,11 +474,31 @@ function initDb() {
   upsertJemaat: (members) => db.transaction((rows) => {
     const findByQr = db.prepare('SELECT id FROM jemaat WHERE qr_code_id = ? OR qrId = ? LIMIT 1');
     const findByIdentity = db.prepare('SELECT id FROM jemaat WHERE name = ? AND birth_date IS ? LIMIT 1');
+    
+    // Cache komsel id
+    const komselMap = {};
+    const getKomselId = (namaKomsel) => {
+      if (!namaKomsel) return null;
+      const lower = namaKomsel.toLowerCase().trim();
+      if (lower === 'belum ber-kc' || lower === 'belum kc') return null;
+      if (komselMap[lower] !== undefined) return komselMap[lower];
+      const found = db.prepare('SELECT id FROM komsel WHERE LOWER(nama_komsel) = ?').get(lower);
+      if (found) {
+        komselMap[lower] = found.id;
+        return found.id;
+      }
+      // If not found, create new komsel temporarily (fallback)
+      const res = db.prepare('INSERT INTO komsel (nama_komsel, kode_warna) VALUES (?, ?)').run(namaKomsel.trim(), '#6B7280');
+      komselMap[lower] = res.lastInsertRowid;
+      return res.lastInsertRowid;
+    };
+
     const insert = db.prepare(`INSERT INTO jemaat
-      (qr_code_id, qrId, name, category, phone, address, birth_date)
-      VALUES (?, ?, ?, ?, ?, ?, ?)`);
+      (qr_code_id, qrId, name, category, phone, address, birth_date, pronouns, tanggal_nikah, tanggal_baptis, catatan, komsel_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
     const update = db.prepare(`UPDATE jemaat SET qr_code_id = ?, qrId = ?, name = ?, category = ?,
-      phone = ?, address = ?, birth_date = ? WHERE id = ?`);
+      phone = ?, address = ?, birth_date = ?, pronouns = ?, tanggal_nikah = ?, tanggal_baptis = ?, catatan = ?, komsel_id = ? WHERE id = ?`);
+    
     const result = { totalInserted: 0, totalUpdated: 0, errors: [] };
     for (let index = 0; index < rows.length; index += 1) {
       const member = rows[index];
@@ -416,8 +507,15 @@ function initDb() {
           ? findByQr.get(member.qr_code_id, member.qr_code_id)
           : findByIdentity.get(member.name, member.birth_date || null);
         const qrCodeId = member.qr_code_id || createUniqueQrCode(findByQr);
-        const values = [qrCodeId, qrCodeId, member.name, member.category, member.phone || null,
-          member.address || null, member.birth_date || null];
+        
+        const komselId = getKomselId(member.nama_komsel);
+        const values = [
+          qrCodeId, qrCodeId, member.name, member.category, 
+          member.phone || null, member.address || null, member.birth_date || null,
+          member.pronouns || null, member.tanggal_nikah || null, member.tanggal_baptis || null,
+          member.catatan || null, komselId
+        ];
+
         if (existing) {
           update.run(...values, existing.id);
           result.totalUpdated += 1;
@@ -434,12 +532,29 @@ function initDb() {
 };
 
 function getJemaatForExport({ category = '', birthMonth = '' } = {}) {
-  let query = `SELECT COALESCE(qr_code_id, qrId) AS qr_code_id, name, category, phone, address,
-    birth_date, created_at FROM jemaat WHERE 1 = 1`;
+  let query = `
+    SELECT
+      COALESCE(j.qr_code_id, j.qrId) AS qr_code_id,
+      j.name,
+      j.pronouns,
+      j.category,
+      j.phone,
+      j.address,
+      j.birth_date,
+      j.tanggal_nikah,
+      j.tanggal_baptis,
+      j.catatan,
+      j.photo,
+      k.nama_komsel,
+      j.created_at
+    FROM jemaat j
+    LEFT JOIN komsel k ON j.komsel_id = k.id
+    WHERE 1 = 1
+  `;
   const params = [];
-  if (category) { query += ' AND category = ?'; params.push(category); }
-  if (birthMonth) { query += " AND CAST(strftime('%m', birth_date) AS INTEGER) = ?"; params.push(Number(birthMonth)); }
-  return db.prepare(`${query} ORDER BY name COLLATE NOCASE`).all(...params);
+  if (category) { query += ' AND j.category = ?'; params.push(category); }
+  if (birthMonth) { query += " AND CAST(strftime('%m', j.birth_date) AS INTEGER) = ?"; params.push(Number(birthMonth)); }
+  return db.prepare(`${query} ORDER BY j.name COLLATE NOCASE`).all(...params);
 }
 
 function createUniqueQrCode(findByQr) {

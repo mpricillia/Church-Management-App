@@ -1,12 +1,18 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Download, Upload, Plus, Search, Pencil, Trash2, QrCode, X, Camera, Gift } from 'lucide-react';
+import { Download, Upload, Plus, Search, Pencil, Trash2, QrCode, X, Camera } from 'lucide-react';
 import QRGenerator from './QRGenerator';
+
+interface KomselData {
+  id: number;
+  nama_komsel: string;
+  kode_warna: string;
+}
 
 const toUiMember = (member: any) => ({
   ...member,
   qrId: member.qrId || member.qr_code_id,
   dob: member.dob || member.birth_date,
-  category: member.category === 'Tetap' ? 'Jemaat' : member.category
+  category: member.category === 'Tetap' ? 'Jemaat' : member.category,
 });
 
 export default function JemaatTablePage() {
@@ -16,58 +22,32 @@ export default function JemaatTablePage() {
   const [itemToDelete, setItemToDelete] = useState<any>(null);
   const [selectedDetailData, setSelectedDetailData] = useState<any>(null);
 
+  // Komsel State
+  const [komselList, setKomselList] = useState<KomselData[]>([]);
+  const [isKomselModalOpen, setIsKomselModalOpen] = useState(false);
+  const [newKomselName, setNewKomselName] = useState('');
+  const [newKomselColor, setNewKomselColor] = useState('#3B82F6');
+
   // Data Persistence
-  const [jemaatData, setJemaatData] = useState(() => {
-    if (window.electronAPI) return [];
-    const saved = localStorage.getItem('mock_jemaat_data');
-    if (saved) {
-      try {
-        let parsed = JSON.parse(saved);
-        // Migrasi otomatis: ubah semua QR- menjadi JM- atau GS- sesuai kategori
-        let hasChanges = false;
-        parsed = parsed.map((item: any) => {
-          if (item.qrId && item.qrId.startsWith('QR-')) {
-            hasChanges = true;
-            const numPart = item.qrId.split('-')[1];
-            const prefix = item.category === 'Jemaat' ? 'JM' : 'GS';
-            return { ...item, qrId: `${prefix}-${numPart}` };
-          }
-          return item;
-        });
-        
-        if (hasChanges) {
-          localStorage.setItem('mock_jemaat_data', JSON.stringify(parsed));
-        }
-        return parsed;
-      } catch (e) {
-        // Fallback
-      }
-    }
-    return [
-      { id: 1, qrId: 'JM-0001', name: 'Budi Santoso', phone: '0812-3456-7890', dob: '1985-04-12', address: 'Jl. Merdeka No. 10, Jakarta', category: 'Jemaat' },
-      { id: 2, qrId: 'JM-0002', name: 'Sarah Wijaya', phone: '0813-4567-8901', dob: '1990-08-25', address: 'Komp. Harmoni Blok C2, Bandung', category: 'Jemaat' },
-      { id: 3, qrId: 'GS-0001', name: 'Michael Chen', phone: '0814-5678-9012', dob: '1992-11-05', address: 'Jl. Sudirman 45, Surabaya', category: 'Guest' },
-      { id: 4, qrId: 'JM-0003', name: 'Keluarga Tan', phone: '0815-6789-0123', dob: '1980-02-15', address: 'Bukit Golf 88, Semarang', category: 'Jemaat' },
-      { id: 5, qrId: 'GS-0002', name: 'Agus Pratama', phone: '0816-7890-1234', dob: '1995-09-30', address: 'Jl. Melati Raya, Medan', category: 'Guest' },
-    ];
-  });
+  const [jemaatData, setJemaatData] = useState<any[]>([]);
 
   useEffect(() => {
-    if (!window.electronAPI) localStorage.setItem('mock_jemaat_data', JSON.stringify(jemaatData));
-  }, [jemaatData]);
-
-  useEffect(() => {
-    const loadMembers = async () => {
+    const loadAll = async () => {
       if (!window.electronAPI) return;
-      const result = await window.electronAPI.getAllJemaat();
-      if (result.success) setJemaatData((result.data || []).map(toUiMember));
+      const [jemaatResult, komselResult] = await Promise.all([
+        window.electronAPI.getAllJemaat(),
+        window.electronAPI.getAllKomsel(),
+      ]);
+      if (jemaatResult.success) setJemaatData((jemaatResult.data || []).map(toUiMember));
+      if (komselResult.success) setKomselList(komselResult.data || []);
     };
-    loadMembers();
+    loadAll();
   }, []);
 
   // Filter State
   const [filterCategory, setFilterCategory] = useState('Semua');
   const [filterBulan, setFilterBulan] = useState('Semua Bulan');
+  const [filterKomsel, setFilterKomsel] = useState('Semua');
   const [searchQuery, setSearchQuery] = useState('');
 
   // Form State
@@ -77,20 +57,32 @@ export default function JemaatTablePage() {
   const [formAddress, setFormAddress] = useState('');
   const [formCategory, setFormCategory] = useState<'Jemaat' | 'Guest'>('Jemaat');
   const [formPhoto, setFormPhoto] = useState('');
+  const [formPronouns, setFormPronouns] = useState('');
+  const [formTanggalNikah, setFormTanggalNikah] = useState('');
+  const [formTanggalBaptis, setFormTanggalBaptis] = useState('');
+  const [formCatatan, setFormCatatan] = useState('');
+  const [formKomselId, setFormKomselId] = useState<number | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const [editingId, setEditingId] = useState<number | null>(null);
   const [initialFormData, setInitialFormData] = useState<any>(null);
+  const [focusedRowIndex, setFocusedRowIndex] = useState<number>(-1);
+  const tableBodyRef = useRef<HTMLTableSectionElement>(null);
 
   const handlePhotoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
       const reader = new FileReader();
-      reader.onloadend = () => {
-        setFormPhoto(reader.result as string);
-      };
+      reader.onloadend = () => setFormPhoto(reader.result as string);
       reader.readAsDataURL(file);
     }
+  };
+
+  const resetForm = () => {
+    setFormName(''); setFormPhone(''); setFormDob(''); setFormAddress('');
+    setFormCategory('Jemaat'); setFormPhoto(''); setFormPronouns('');
+    setFormTanggalNikah(''); setFormTanggalBaptis(''); setFormCatatan('');
+    setFormKomselId(null);
   };
 
   const openModal = (mode: 'add' | 'edit', member: any = null) => {
@@ -102,22 +94,28 @@ export default function JemaatTablePage() {
       setFormAddress(member.address || '');
       setFormCategory(member.category || 'Jemaat');
       setFormPhoto(member.photo || '');
+      
+      let pronoun = member.pronouns || '';
+      const pLower = pronoun.toLowerCase().replace(/[^a-z]/g, '');
+      if (pLower.includes('bpk') || pLower.includes('bapak')) pronoun = 'Bapak';
+      else if (pLower.includes('ibu')) pronoun = 'Ibu';
+      else if (pLower.includes('sdr') || pLower.includes('saudara')) pronoun = 'Sdr/i';
+      
+      setFormPronouns(pronoun);
+      setFormTanggalNikah(member.tanggal_nikah || '');
+      setFormTanggalBaptis(member.tanggal_baptis || '');
+      setFormCatatan(member.catatan || '');
+      setFormKomselId(member.komsel_id || null);
       setEditingId(member.id);
       setInitialFormData({
-        name: member.name || '',
-        phone: member.phone || '',
-        dob: member.dob || '',
-        address: member.address || '',
-        category: member.category || 'Jemaat',
-        photo: member.photo || ''
+        name: member.name || '', phone: member.phone || '', dob: member.dob || '',
+        address: member.address || '', category: member.category || 'Jemaat',
+        photo: member.photo || '', pronouns: member.pronouns || '',
+        tanggal_nikah: member.tanggal_nikah || '', tanggal_baptis: member.tanggal_baptis || '',
+        catatan: member.catatan || '', komsel_id: member.komsel_id || null,
       });
     } else {
-      setFormName('');
-      setFormPhone('');
-      setFormDob('');
-      setFormAddress('');
-      setFormCategory('Jemaat');
-      setFormPhoto('');
+      resetForm();
       setEditingId(null);
       setInitialFormData(null);
     }
@@ -127,72 +125,71 @@ export default function JemaatTablePage() {
   const generateNewId = (category: string, dataArray: any[]) => {
     const prefix = category === 'Jemaat' ? 'JM' : 'GS';
     const filtered = dataArray.filter((item: any) => item.qrId && item.qrId.startsWith(prefix + '-'));
-    
     let maxNum = 0;
     filtered.forEach((item: any) => {
       const numPart = parseInt(item.qrId.split('-')[1], 10);
-      if (!isNaN(numPart) && numPart > maxNum) {
-        maxNum = numPart;
-      }
+      if (!isNaN(numPart) && numPart > maxNum) maxNum = numPart;
     });
-    
     return `${prefix}-${(maxNum + 1).toString().padStart(4, '0')}`;
   };
 
+  const buildMemberPayload = (qrId?: string) => ({
+    qr_code_id: qrId,
+    name: formName || 'Tanpa Nama',
+    phone: formPhone || '-',
+    birth_date: formDob || null,
+    address: formAddress || '-',
+    category: formCategory === 'Jemaat' ? 'Tetap' : formCategory,
+    photo: formPhoto,
+    pronouns: formPronouns || null,
+    tanggal_nikah: formTanggalNikah || null,
+    tanggal_baptis: formTanggalBaptis || null,
+    catatan: formCatatan || null,
+    komsel_id: formCategory === 'Jemaat' ? (formKomselId || null) : null,
+  });
+
   const handleSimpan = async () => {
     if (modalMode === 'edit' && editingId) {
-      const updatedMember = {
-        qr_code_id: jemaatData.find(item => item.id === editingId)?.qrId,
-        name: formName || 'Tanpa Nama',
-        phone: formPhone || '-',
-        birth_date: formDob || null,
-        address: formAddress || '-',
-        category: formCategory === 'Jemaat' ? 'Tetap' : formCategory,
-        photo: formPhoto
-      };
+      const existingQrId = jemaatData.find(item => item.id === editingId)?.qrId;
+      const payload = buildMemberPayload(existingQrId);
       if (window.electronAPI) {
-        const result = await window.electronAPI.updateJemaat(editingId, updatedMember);
+        const result = await window.electronAPI.updateJemaat(editingId, payload);
         if (!result.success) { alert(result.error || 'Gagal memperbarui jemaat.'); return; }
       }
+      const komsel = komselList.find(k => k.id === formKomselId);
       setJemaatData(prev => prev.map(item =>
-        item.id === editingId 
-          ? {
-              ...item,
-              ...updatedMember,
-              qrId: updatedMember.qr_code_id,
-              dob: updatedMember.birth_date || '-',
-              category: formCategory,
-            } 
+        item.id === editingId
+          ? { ...item, ...payload, qrId: existingQrId, dob: formDob || '-',
+              category: formCategory, komsel_id: formKomselId,
+              nama_komsel: komsel?.nama_komsel || null, kode_warna: komsel?.kode_warna || null }
           : item
       ));
     } else {
-      const newData = {
-        id: Date.now(),
-        qrId: generateNewId(formCategory, jemaatData),
-        name: formName || 'Tanpa Nama',
-        phone: formPhone || '-',
-        dob: formDob || '-',
-        address: formAddress || '-',
-        category: formCategory,
-        photo: formPhoto
-      };
+      const newQrId = generateNewId(formCategory, jemaatData);
+      const payload = buildMemberPayload(newQrId);
       if (window.electronAPI) {
-        const result = await window.electronAPI.createJemaat({
-          qr_code_id: newData.qrId,
-          name: newData.name,
-          phone: newData.phone,
-          birth_date: newData.dob === '-' ? null : newData.dob,
-          address: newData.address,
-          category: newData.category === 'Jemaat' ? 'Tetap' : newData.category,
-          photo: newData.photo
-        });
+        const result = await window.electronAPI.createJemaat(payload);
         if (!result.success) { alert(result.error || 'Gagal menambahkan jemaat.'); return; }
         setJemaatData(prev => [toUiMember(result.data), ...prev]);
       } else {
-        setJemaatData(prev => [newData, ...prev]);
+        setJemaatData(prev => [{ ...payload, id: Date.now(), qrId: newQrId, dob: formDob || '-', category: formCategory }, ...prev]);
       }
     }
     setIsModalOpen(false);
+  };
+
+  const handleAddKomsel = async () => {
+    if (!newKomselName.trim()) return;
+    if (window.electronAPI) {
+      const result = await window.electronAPI.createKomsel({ nama_komsel: newKomselName.trim(), kode_warna: newKomselColor });
+      if (!result.success) { alert(result.error || 'Gagal membuat komsel.'); return; }
+      const created: KomselData = result.data;
+      setKomselList(prev => [...prev, created].sort((a, b) => a.nama_komsel.localeCompare(b.nama_komsel)));
+      setFormKomselId(created.id);
+    }
+    setIsKomselModalOpen(false);
+    setNewKomselName('');
+    setNewKomselColor('#3B82F6');
   };
 
   const confirmDelete = async () => {
@@ -210,12 +207,12 @@ export default function JemaatTablePage() {
     if (modalMode === 'add') return true;
     if (!initialFormData) return false;
     return (
-      formName !== initialFormData.name ||
-      formPhone !== initialFormData.phone ||
-      formDob !== initialFormData.dob ||
-      formAddress !== initialFormData.address ||
-      formCategory !== initialFormData.category ||
-      formPhoto !== initialFormData.photo
+      formName !== initialFormData.name || formPhone !== initialFormData.phone ||
+      formDob !== initialFormData.dob || formAddress !== initialFormData.address ||
+      formCategory !== initialFormData.category || formPhoto !== initialFormData.photo ||
+      formPronouns !== initialFormData.pronouns || formTanggalNikah !== initialFormData.tanggal_nikah ||
+      formTanggalBaptis !== initialFormData.tanggal_baptis || formCatatan !== initialFormData.catatan ||
+      formKomselId !== initialFormData.komsel_id
     );
   };
 
@@ -230,26 +227,26 @@ export default function JemaatTablePage() {
   const filteredData = jemaatData.filter(row => {
     const matchesCategory = filterCategory === 'Semua' || row.category === filterCategory;
     const searchLower = searchQuery.toLowerCase();
-    const matchesSearch = !searchQuery || 
-      row.name.toLowerCase().includes(searchLower) || 
-      row.phone.includes(searchQuery) ||
-      (row.qrId && row.qrId.toLowerCase().includes(searchLower));
-    
+    const matchesSearch = !searchQuery ||
+      (row.name?.toLowerCase() || '').includes(searchLower) ||
+      (row.phone?.toString() || '').includes(searchQuery) ||
+      (row.qrId?.toLowerCase() || '').includes(searchLower);
     let matchesBulan = true;
     if (filterBulan !== 'Semua Bulan') {
-      if (!row.dob || row.dob === '-') {
-        matchesBulan = false;
-      } else {
+      if (!row.dob || row.dob === '-') { matchesBulan = false; }
+      else {
         const dobDate = new Date(row.dob);
-        if (!isNaN(dobDate.getTime())) {
-          matchesBulan = dobDate.getMonth() === bulanMap[filterBulan];
-        } else {
-          matchesBulan = false;
-        }
+        if (!isNaN(dobDate.getTime())) matchesBulan = dobDate.getMonth() === bulanMap[filterBulan];
+        else matchesBulan = false;
       }
     }
-
-    return matchesCategory && matchesSearch && matchesBulan;
+    let matchesKomsel = true;
+    if (filterKomsel === 'belum-kc') {
+      matchesKomsel = row.category === 'Jemaat' && !row.komsel_id;
+    } else if (filterKomsel !== 'Semua') {
+      matchesKomsel = String(row.komsel_id) === filterKomsel;
+    }
+    return matchesCategory && matchesSearch && matchesBulan && matchesKomsel;
   });
 
   const handleExportExcel = async () => {
@@ -265,151 +262,185 @@ export default function JemaatTablePage() {
     if (!window.electronAPI) return;
     const result = await window.electronAPI.importJemaat();
     if (!result.success) { alert(result.error || 'Import gagal.'); return; }
-    const members = await window.electronAPI.getAllJemaat();
+    
+    // Refresh both jemaat and komsel lists to get newly added komsels
+    const [members, komsels] = await Promise.all([
+      window.electronAPI.getAllJemaat(),
+      window.electronAPI.getAllKomsel()
+    ]);
     if (members.success) setJemaatData((members.data || []).map(toUiMember));
+    if (komsels.success) setKomselList(komsels.data || []);
   };
+
+  const inputClass = "w-full border border-gray-200 rounded-lg px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-gray-200 transition-shadow text-gray-900 bg-white";
+  const labelClass = "block text-sm font-medium text-gray-700 mb-1.5";
 
   return (
     <div className="h-full flex flex-col space-y-6">
-      {/* Header & Top Bar */}
+      {/* Header */}
       <div className="flex items-center justify-between">
         <h2 className="text-2xl font-bold text-gray-900 tracking-tight">Database Jemaat</h2>
         <div className="flex items-center gap-3">
           <button onClick={handleExportExcel} className="flex items-center gap-2 px-4 py-2 bg-white border border-[#8f213e] text-[#8f213e] rounded-lg text-sm font-medium hover:bg-gray-50 transition-colors shadow-sm">
-            <Upload className="w-4 h-4 text-[#8f213e]" />
-            Export XLSX
+            <Upload className="w-4 h-4" /> Export XLSX
           </button>
           <button onClick={handleImportExcel} className="flex items-center gap-2 px-4 py-2 bg-white border border-[#8f213e] text-[#8f213e] rounded-lg text-sm font-medium hover:bg-gray-50 transition-colors shadow-sm">
-            <Download className="w-4 h-4 text-[#8f213e]" />
-            Import Data
+            <Download className="w-4 h-4" /> Import Data
           </button>
-          <button 
-            onClick={() => openModal('add')}
-            className="flex items-center gap-2 px-4 py-2 bg-[#8f213e] text-white rounded-lg text-sm font-medium hover:bg-[#7a1c35] transition-colors shadow-sm"
-          >
-            <Plus className="w-4 h-4" />
-            Tambah Jemaat
+          <button onClick={() => openModal('add')} className="flex items-center gap-2 px-4 py-2 bg-[#8f213e] text-white rounded-lg text-sm font-medium hover:bg-[#7a1c35] transition-colors shadow-sm">
+            <Plus className="w-4 h-4" /> Tambah Jemaat
           </button>
         </div>
       </div>
 
       {/* Search & Filter */}
-      <div className="flex items-center gap-4">
-        <div className="relative w-96">
+      <div className="flex items-center gap-3 flex-wrap">
+        <div className="relative w-80">
           <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
             <Search className="w-5 h-5 text-gray-400" />
           </div>
-          <input
-            type="text"
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
+          <input type="text" value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)}
             placeholder="Cari nama, QR ID, atau No HP..."
-            className="w-full pl-10 pr-4 py-2.5 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-gray-200 transition-shadow bg-white text-gray-700"
-          />
+            className="w-full pl-10 pr-4 py-2.5 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-gray-200 transition-shadow bg-white text-gray-700" />
         </div>
-        <select 
-          value={filterCategory}
-          onChange={(e) => setFilterCategory(e.target.value)}
-          className="border border-gray-200 rounded-lg px-4 py-2.5 bg-white text-gray-700 text-sm font-medium focus:outline-none focus:ring-2 focus:ring-gray-200 transition-shadow shadow-sm cursor-pointer"
-        >
+        <select value={filterCategory} onChange={(e) => setFilterCategory(e.target.value)}
+          className="border border-gray-200 rounded-lg px-4 py-2.5 bg-white text-gray-700 text-sm font-medium focus:outline-none focus:ring-2 focus:ring-gray-200 shadow-sm cursor-pointer">
           <option value="Semua">Semua Kategori</option>
           <option value="Jemaat">Jemaat</option>
           <option value="Guest">Guest</option>
         </select>
-        <select 
-          value={filterBulan}
-          onChange={(e) => setFilterBulan(e.target.value)}
-          className="border border-gray-200 rounded-lg px-4 py-2.5 bg-white text-gray-700 text-sm font-medium focus:outline-none focus:ring-2 focus:ring-gray-200 transition-shadow shadow-sm cursor-pointer"
-        >
+        <select value={filterKomsel} onChange={(e) => setFilterKomsel(e.target.value)}
+          className="border border-gray-200 rounded-lg px-4 py-2.5 bg-white text-gray-700 text-sm font-medium focus:outline-none focus:ring-2 focus:ring-gray-200 shadow-sm cursor-pointer">
+          <option value="Semua">Semua Komsel</option>
+          <option value="belum-kc">Belum ber-KC</option>
+          {komselList.map(k => (
+            <option key={k.id} value={String(k.id)}>{k.nama_komsel}</option>
+          ))}
+        </select>
+        <select value={filterBulan} onChange={(e) => setFilterBulan(e.target.value)}
+          className="border border-gray-200 rounded-lg px-4 py-2.5 bg-white text-gray-700 text-sm font-medium focus:outline-none focus:ring-2 focus:ring-gray-200 shadow-sm cursor-pointer">
           <option value="Semua Bulan">Semua Bulan</option>
-          <option value="Januari">Januari</option>
-          <option value="Februari">Februari</option>
-          <option value="Maret">Maret</option>
-          <option value="April">April</option>
-          <option value="Mei">Mei</option>
-          <option value="Juni">Juni</option>
-          <option value="Juli">Juli</option>
-          <option value="Agustus">Agustus</option>
-          <option value="September">September</option>
-          <option value="Oktober">Oktober</option>
-          <option value="November">November</option>
-          <option value="Desember">Desember</option>
+          {["Januari","Februari","Maret","April","Mei","Juni","Juli","Agustus","September","Oktober","November","Desember"].map(b => (
+            <option key={b} value={b}>{b}</option>
+          ))}
         </select>
       </div>
 
-      {/* Tabel Data */}
+      {/* Tabel */}
       <div className="bg-white rounded-xl shadow-sm border border-gray-100 flex-1 overflow-hidden flex flex-col">
         <div className="overflow-x-auto">
           <table className="w-full text-left border-collapse">
             <thead>
               <tr className="bg-gray-50 border-b border-gray-100">
-                <th className="py-4 px-6 text-xs font-semibold text-gray-500 uppercase tracking-wider">ID</th>
-                <th className="py-4 px-6 text-xs font-semibold text-gray-500 uppercase tracking-wider">Nama Lengkap</th>
-                <th className="py-4 px-6 text-xs font-semibold text-gray-500 uppercase tracking-wider">No. HP</th>
-                <th className="py-4 px-6 text-xs font-semibold text-gray-500 uppercase tracking-wider">Tanggal Lahir</th>
-                <th className="py-4 px-6 text-xs font-semibold text-gray-500 uppercase tracking-wider">Alamat</th>
-                <th className="py-4 px-6 text-xs font-semibold text-gray-500 uppercase tracking-wider">Kategori</th>
-                <th className="py-4 px-6 text-xs font-semibold text-gray-500 uppercase tracking-wider text-right">Aksi</th>
+                <th className="py-4 px-4 text-xs font-semibold text-gray-500 uppercase tracking-wider whitespace-nowrap">ID</th>
+                <th className="py-4 px-4 text-xs font-semibold text-gray-500 uppercase tracking-wider whitespace-nowrap">Nama Lengkap</th>
+                <th className="py-4 px-4 text-xs font-semibold text-gray-500 uppercase tracking-wider whitespace-nowrap">No. HP</th>
+                <th className="py-4 px-4 text-xs font-semibold text-gray-500 uppercase tracking-wider whitespace-nowrap">Tgl Lahir</th>
+                <th className="py-4 px-4 text-xs font-semibold text-gray-500 uppercase tracking-wider whitespace-nowrap">Tgl Nikah</th>
+                <th className="py-4 px-4 text-xs font-semibold text-gray-500 uppercase tracking-wider whitespace-nowrap">Tgl Baptis</th>
+                <th className="py-4 px-4 text-xs font-semibold text-gray-500 uppercase tracking-wider whitespace-nowrap">Kategori</th>
+                <th className="py-4 px-4 text-xs font-semibold text-gray-500 uppercase tracking-wider whitespace-nowrap">Komsel</th>
+                <th className="py-4 px-4 text-xs font-semibold text-gray-500 uppercase tracking-wider whitespace-nowrap">Catatan</th>
+                <th className="py-4 px-4 text-xs font-semibold text-gray-500 uppercase tracking-wider text-right whitespace-nowrap">Aksi</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-gray-100">
-              {filteredData.map((row) => (
-                <tr key={row.id} className="hover:bg-gray-50/50 transition-colors">
-                  <td className="py-4 px-6 text-sm text-gray-600 font-mono">{row.qrId}</td>
-                  <td className="py-4 px-6 text-sm font-medium text-gray-900">
-                    <div 
-                      className="flex items-center gap-3 cursor-pointer group"
-                      onClick={() => setSelectedDetailData(row)}
-                    >
-                      <img 
-                        src={row.photo || `https://ui-avatars.com/api/?name=${encodeURIComponent(row.name)}&background=8f213e&color=fff`} 
-                        alt={row.name} 
+            <tbody 
+              ref={tableBodyRef}
+              className="divide-y divide-gray-100"
+              onKeyDown={(e) => {
+                if (e.key === 'ArrowDown') {
+                  e.preventDefault();
+                  const next = Math.min(focusedRowIndex + 1, filteredData.length - 1);
+                  setFocusedRowIndex(next);
+                  (tableBodyRef.current?.children[next] as HTMLElement)?.focus();
+                } else if (e.key === 'ArrowUp') {
+                  e.preventDefault();
+                  const prev = Math.max(focusedRowIndex - 1, 0);
+                  setFocusedRowIndex(prev);
+                  (tableBodyRef.current?.children[prev] as HTMLElement)?.focus();
+                }
+              }}
+            >
+              {filteredData.map((row, idx) => (
+                <tr 
+                  key={row.id} 
+                  tabIndex={0}
+                  className={`transition-colors outline-none ${
+                    focusedRowIndex === idx 
+                      ? 'bg-blue-50/60 ring-1 ring-inset ring-blue-200' 
+                      : 'hover:bg-gray-50/50'
+                  }`}
+                  onFocus={() => setFocusedRowIndex(idx)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openModal('edit', row); }
+                    else if (e.key === 'Delete') { e.preventDefault(); setItemToDelete(row); }
+                  }}
+                >
+                  <td className="py-3 px-4 text-sm text-gray-600 font-mono whitespace-nowrap">{row.qrId}</td>
+                  <td className="py-3 px-4 text-sm font-medium text-gray-900">
+                    <div className="flex items-center gap-2 cursor-pointer group" onClick={() => setSelectedDetailData(row)}>
+                      <img
+                        src={row.photo || `https://ui-avatars.com/api/?name=${encodeURIComponent(row.name)}&background=8f213e&color=fff`}
+                        alt={row.name}
                         className="w-8 h-8 rounded-full object-cover shrink-0 bg-gray-100 shadow-sm group-hover:ring-2 group-hover:ring-[#8f213e] transition-all"
                       />
-                      <span className="group-hover:text-[#8f213e] group-hover:underline transition-colors">{row.name}</span>
+                      <div>
+                        <span className="group-hover:text-[#8f213e] group-hover:underline transition-colors whitespace-nowrap">{row.name}</span>
+                        {row.pronouns && <span className="ml-1 text-xs text-gray-400">({row.pronouns})</span>}
+                      </div>
                     </div>
                   </td>
-                  <td className="py-4 px-6 text-sm text-gray-600">{row.phone}</td>
-                  <td className="py-4 px-6 text-sm text-gray-600">
-                    {row.dob && row.dob !== '-' 
+                  <td className="py-3 px-4 text-sm text-gray-600 whitespace-nowrap">{row.phone}</td>
+                  <td className="py-3 px-4 text-sm text-gray-600 whitespace-nowrap">
+                    {row.dob && row.dob !== '-'
                       ? new Date(row.dob).toLocaleDateString('id-ID', { day: 'numeric', month: 'short', year: 'numeric' })
-                      : '-'}
+                      : <span className="text-gray-300">—</span>}
                   </td>
-                  <td className="py-4 px-6 text-sm text-gray-600 truncate max-w-[150px]" title={row.address}>{row.address}</td>
-                  <td className="py-4 px-6 text-sm">
+                  <td className="py-3 px-4 text-sm text-gray-600 whitespace-nowrap">
+                    {row.tanggal_nikah
+                      ? new Date(row.tanggal_nikah).toLocaleDateString('id-ID', { day: 'numeric', month: 'short', year: 'numeric' })
+                      : <span className="text-gray-300">—</span>}
+                  </td>
+                  <td className="py-3 px-4 text-sm text-gray-600 whitespace-nowrap">
+                    {row.tanggal_baptis
+                      ? new Date(row.tanggal_baptis).toLocaleDateString('id-ID', { day: 'numeric', month: 'short', year: 'numeric' })
+                      : <span className="text-gray-300">—</span>}
+                  </td>
+                  <td className="py-3 px-4 text-sm">
                     <span className={`inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium border ${
-                      row.category === 'Jemaat' 
-                        ? 'bg-blue-50 text-blue-700 border-blue-200' 
-                        : 'bg-[#cca353]/10 text-[#cca353] border-[#cca353]/30'
-                    }`}>
-                      {row.category}
-                    </span>
+                      row.category === 'Jemaat' ? 'bg-blue-50 text-blue-700 border-blue-200' : 'bg-[#cca353]/10 text-[#cca353] border-[#cca353]/30'
+                    }`}>{row.category}</span>
                   </td>
-                  <td className="py-4 px-6 text-sm text-right">
-                    <div className="flex items-center justify-end gap-2">
+                  <td className="py-3 px-4 text-sm">
+                    {row.category === 'Jemaat' ? (
+                      row.nama_komsel ? (
+                        <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border border-gray-200 text-gray-700 bg-white shadow-sm whitespace-nowrap">
+                          <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: row.kode_warna || '#6B7280' }} />
+                          {row.nama_komsel}
+                        </span>
+                      ) : (
+                        <span className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium border border-dashed border-gray-300 text-gray-400 bg-gray-50 whitespace-nowrap">Belum ber-KC</span>
+                      )
+                    ) : (
+                      <span className="text-gray-300 text-xs">—</span>
+                    )}
+                  </td>
+                  <td className="py-3 px-4 text-sm text-gray-600 max-w-[180px]">
+                    {row.catatan
+                      ? <span className="block truncate text-gray-600" title={row.catatan}>{row.catatan}</span>
+                      : <span className="text-gray-300">—</span>}
+                  </td>
+                  <td className="py-3 px-4 text-sm text-right">
+                    <div className="flex items-center justify-end gap-1">
                       {row.category === 'Jemaat' ? (
-                        <button 
-                          onClick={() => setSelectedMemberForQR(row)}
-                          className="p-1.5 text-gray-400 hover:text-gray-900 hover:bg-gray-100 rounded-md transition-colors"
-                          title="Lihat QR"
-                        >
+                        <button onClick={() => setSelectedMemberForQR(row)} className="p-1.5 text-gray-400 hover:text-gray-900 hover:bg-gray-100 rounded-md transition-colors" title="Lihat QR">
                           <QrCode className="w-4 h-4" />
                         </button>
-                      ) : (
-                        <div className="w-7 h-7"></div>
-                      )}
-                      <button 
-                        onClick={() => openModal('edit', row)}
-                        className="p-1.5 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded-md transition-colors"
-                        title="Edit Data"
-                      >
+                      ) : (<div className="w-7 h-7" />)}
+                      <button onClick={() => openModal('edit', row)} className="p-1.5 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded-md transition-colors" title="Edit Data">
                         <Pencil className="w-4 h-4" />
                       </button>
-                      <button 
-                        onClick={() => setItemToDelete(row)}
-                        className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-md transition-colors"
-                        title="Hapus Data"
-                      >
+                      <button onClick={() => setItemToDelete(row)} className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-md transition-colors" title="Hapus Data">
                         <Trash2 className="w-4 h-4" />
                       </button>
                     </div>
@@ -421,31 +452,28 @@ export default function JemaatTablePage() {
         </div>
       </div>
 
-      {/* Simulasi Modal Form (Popup CRUD) */}
+      {/* ===== Modal Tambah / Edit Jemaat ===== */}
       {isModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
-          <div className="bg-white rounded-2xl w-full max-w-md shadow-xl border border-gray-100 overflow-hidden">
-            {/* Modal Header */}
+        <div 
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm"
+          onKeyDown={(e) => { if (e.key === 'Escape') setIsModalOpen(false); }}
+        >
+          <div className="bg-white rounded-2xl w-full max-w-lg shadow-xl border border-gray-100 overflow-hidden">
             <div className="px-6 py-4 border-b border-gray-100 flex items-center justify-between">
               <h3 className="text-lg font-bold text-gray-900">
                 {modalMode === 'add' ? 'Tambah Jemaat Baru' : 'Edit Data Jemaat'}
               </h3>
-              <button 
-                onClick={() => setIsModalOpen(false)}
-                className="text-gray-400 hover:text-gray-900 transition-colors"
-              >
+              <button onClick={() => setIsModalOpen(false)} className="text-gray-400 hover:text-gray-900 transition-colors">
                 <X className="w-5 h-5" />
               </button>
             </div>
 
-            {/* Modal Body (Form) */}
-            <div className="p-6 space-y-4 max-h-[60vh] overflow-y-auto">
-              <div className="flex justify-center mb-6">
+            <div className="p-6 space-y-4 max-h-[70vh] overflow-y-auto">
+              {/* Foto */}
+              <div className="flex justify-center mb-2">
                 <div className="relative">
-                  <div 
-                    onClick={() => fileInputRef.current?.click()}
-                    className="w-24 h-24 rounded-full bg-gray-100 border-2 border-dashed border-gray-300 flex items-center justify-center cursor-pointer hover:bg-gray-50 transition-colors overflow-hidden group"
-                  >
+                  <div onClick={() => fileInputRef.current?.click()}
+                    className="w-24 h-24 rounded-full bg-gray-100 border-2 border-dashed border-gray-300 flex items-center justify-center cursor-pointer hover:bg-gray-50 transition-colors overflow-hidden group">
                     {formPhoto ? (
                       <img src={formPhoto} alt="Preview" className="w-full h-full object-cover" />
                     ) : (
@@ -455,103 +483,167 @@ export default function JemaatTablePage() {
                       <Camera className="w-6 h-6 text-white" />
                     </div>
                   </div>
-                  <input 
-                    type="file" 
-                    ref={fileInputRef} 
-                    onChange={handlePhotoUpload} 
-                    accept="image/*" 
-                    className="hidden" 
-                  />
+                  <input type="file" ref={fileInputRef} onChange={handlePhotoUpload} accept="image/*" className="hidden" />
                 </div>
               </div>
+
+              {/* Nama */}
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1.5">Nama Lengkap</label>
-                <input 
-                  type="text" 
-                  value={formName || ""}
-                  onChange={(e) => setFormName(e.target.value)}
-                  placeholder="Masukkan nama lengkap..."
-                  className="w-full border border-gray-200 rounded-lg px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-gray-200 transition-shadow text-gray-900"
-                />
+                <label className={labelClass}>Nama Lengkap</label>
+                <input type="text" value={formName} onChange={(e) => setFormName(e.target.value)}
+                  placeholder="Masukkan nama lengkap..." className={inputClass} />
               </div>
+
+              {/* Pronouns + Kategori */}
               <div className="grid grid-cols-2 gap-4">
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1.5">No. Handphone</label>
-                  <input 
-                    type="tel" 
-                    value={formPhone || ""}
-                    onChange={(e) => setFormPhone(e.target.value)}
-                    placeholder="08xx-xxxx-xxxx"
-                    className="w-full border border-gray-200 rounded-lg px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-gray-200 transition-shadow text-gray-900"
-                  />
+                  <label className={labelClass}>Sapaan</label>
+                  <select value={formPronouns} onChange={(e) => setFormPronouns(e.target.value)} className={inputClass}>
+                    <option value="">— Pilih Sapaan —</option>
+                    <option value="Bapak">Bapak</option>
+                    <option value="Ibu">Ibu</option>
+                    <option value="Sdr/i">Sdr/i</option>
+                  </select>
                 </div>
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1.5">Tanggal Lahir</label>
-                  <input 
-                    type="date" 
-                    value={formDob || ""}
-                    onChange={(e) => setFormDob(e.target.value)}
-                    className="w-full border border-gray-200 rounded-lg px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-gray-200 transition-shadow text-gray-900 bg-white"
-                  />
+                  <label className={labelClass}>Kategori</label>
+                  <div className="flex gap-4 mt-3">
+                    <label className="flex items-center gap-2 cursor-pointer">
+                      <input type="radio" name="kategori" value="Jemaat" checked={formCategory === 'Jemaat'} onChange={() => setFormCategory('Jemaat')} className="text-gray-900 focus:ring-gray-900" />
+                      <span className="text-sm text-gray-700">Jemaat</span>
+                    </label>
+                    <label className="flex items-center gap-2 cursor-pointer">
+                      <input type="radio" name="kategori" value="Guest" checked={formCategory === 'Guest'} onChange={() => { setFormCategory('Guest'); setFormKomselId(null); }} className="text-gray-900 focus:ring-gray-900" />
+                      <span className="text-sm text-gray-700">Guest</span>
+                    </label>
+                  </div>
                 </div>
               </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1.5">Alamat</label>
-                <textarea 
-                  rows={3}
-                  value={formAddress || ""}
-                  onChange={(e) => setFormAddress(e.target.value)}
-                  placeholder="Masukkan alamat lengkap..."
-                  className="w-full border border-gray-200 rounded-lg px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-gray-200 transition-shadow text-gray-900 resize-none"
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1.5">Kategori / Tipe</label>
-                <div className="flex gap-4">
-                  <label className="flex items-center gap-2 cursor-pointer">
-                    <input 
-                      type="radio" 
-                      name="kategori" 
-                      value="Jemaat" 
-                      checked={formCategory === 'Jemaat'}
-                      onChange={() => setFormCategory('Jemaat')}
-                      className="text-gray-900 focus:ring-gray-900" 
-                    />
-                    <span className="text-sm text-gray-700">Jemaat</span>
-                  </label>
-                  <label className="flex items-center gap-2 cursor-pointer">
-                    <input 
-                      type="radio" 
-                      name="kategori" 
-                      value="Guest" 
-                      checked={formCategory === 'Guest'}
-                      onChange={() => setFormCategory('Guest')}
-                      className="text-gray-900 focus:ring-gray-900" 
-                    />
-                    <span className="text-sm text-gray-700">Guest</span>
-                  </label>
+
+              {/* HP + Tgl Lahir */}
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className={labelClass}>No. Handphone</label>
+                  <input type="tel" value={formPhone} onChange={(e) => setFormPhone(e.target.value)}
+                    placeholder="08xx-xxxx-xxxx" className={inputClass} />
                 </div>
+                <div>
+                  <label className={labelClass}>Tanggal Lahir</label>
+                  <input type="date" value={formDob} onChange={(e) => setFormDob(e.target.value)}
+                    max="9999-12-31" className={inputClass} />
+                </div>
+              </div>
+
+              {/* Tgl Nikah + Tgl Baptis */}
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className={labelClass}>Tanggal Nikah <span className="text-gray-400 font-normal">(opsional)</span></label>
+                  <input type="date" value={formTanggalNikah} onChange={(e) => setFormTanggalNikah(e.target.value)}
+                    max="9999-12-31" className={inputClass} />
+                </div>
+                <div>
+                  <label className={labelClass}>Tanggal Baptis <span className="text-gray-400 font-normal">(opsional)</span></label>
+                  <input type="date" value={formTanggalBaptis} onChange={(e) => setFormTanggalBaptis(e.target.value)}
+                    max="9999-12-31" className={inputClass} />
+                </div>
+              </div>
+
+              {/* Alamat */}
+              <div>
+                <label className={labelClass}>Alamat</label>
+                <textarea rows={2} value={formAddress} onChange={(e) => setFormAddress(e.target.value)}
+                  placeholder="Masukkan alamat lengkap..." className={`${inputClass} resize-none`} />
+              </div>
+
+              {/* Komsel — hanya tampil untuk Jemaat */}
+              {formCategory === 'Jemaat' && (
+                <div>
+                  <label className={labelClass}>Komsel</label>
+                  <select
+                    value={formKomselId !== null ? String(formKomselId) : ''}
+                    onChange={(e) => {
+                      if (e.target.value === 'add_new') {
+                        setIsKomselModalOpen(true);
+                      } else {
+                        setFormKomselId(e.target.value ? Number(e.target.value) : null);
+                      }
+                    }}
+                    className={inputClass}
+                  >
+                    <option value="">— Belum ber-KC —</option>
+                    {komselList.map(k => (
+                      <option key={k.id} value={String(k.id)}>{k.nama_komsel}</option>
+                    ))}
+                    <option value="add_new">+ Tambah Komsel Baru...</option>
+                  </select>
+                </div>
+              )}
+
+              {/* Catatan */}
+              <div>
+                <label className={labelClass}>Catatan <span className="text-gray-400 font-normal">(opsional)</span></label>
+                <textarea rows={2} value={formCatatan} onChange={(e) => setFormCatatan(e.target.value)}
+                  placeholder="Catatan tambahan..." className={`${inputClass} resize-none`} />
               </div>
             </div>
 
-            {/* Modal Footer */}
             <div className="px-6 py-4 border-t border-gray-100 bg-gray-50 flex justify-end gap-3">
-              <button 
-                onClick={() => setIsModalOpen(false)}
-                className="px-4 py-2 bg-white border border-gray-200 text-gray-700 rounded-lg text-sm font-medium hover:bg-gray-100 transition-colors"
-              >
+              <button onClick={() => setIsModalOpen(false)}
+                className="px-4 py-2 bg-white border border-gray-200 text-gray-700 rounded-lg text-sm font-medium hover:bg-gray-100 transition-colors">
                 Batal
               </button>
-              <button 
-                onClick={handleSimpan}
-                disabled={isSaveDisabled}
-                className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
-                  isSaveDisabled 
-                    ? 'bg-gray-300 text-gray-500 cursor-not-allowed'
-                    : 'bg-[#8f213e] text-white hover:bg-[#7a1c35] shadow-sm'
-                }`}
-              >
+              <button onClick={handleSimpan} disabled={isSaveDisabled}
+                className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${isSaveDisabled ? 'bg-gray-300 text-gray-500 cursor-not-allowed' : 'bg-[#8f213e] text-white hover:bg-[#7a1c35] shadow-sm'}`}>
                 {modalMode === 'add' ? 'Simpan' : 'Update'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ===== Modal Tambah Komsel Baru (Nested) ===== */}
+      {isKomselModalOpen && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
+          <div className="bg-white rounded-2xl w-full max-w-sm shadow-2xl border border-gray-100 overflow-hidden">
+            <div className="px-6 py-4 border-b border-gray-100 flex items-center justify-between">
+              <h3 className="text-base font-bold text-gray-900">Tambah Komsel Baru</h3>
+              <button onClick={() => { setIsKomselModalOpen(false); }} className="text-gray-400 hover:text-gray-900 transition-colors">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="p-6 space-y-4">
+              <div>
+                <label className={labelClass}>Nama Komsel</label>
+                <input type="text" value={newKomselName} onChange={(e) => setNewKomselName(e.target.value)}
+                  placeholder="Contoh: Komsel Epsilon..." className={inputClass} autoFocus />
+              </div>
+              <div>
+                <label className={labelClass}>Warna Label</label>
+                <div className="flex items-center gap-4">
+                  <input type="color" value={newKomselColor} onChange={(e) => setNewKomselColor(e.target.value)}
+                    className="w-12 h-10 rounded-lg border border-gray-200 cursor-pointer p-1 bg-white" />
+                  <div className="flex flex-wrap gap-2">
+                    {['#3B82F6','#10B981','#F59E0B','#8B5CF6','#EF4444','#EC4899','#F97316','#06B6D4'].map(c => (
+                      <button key={c} onClick={() => setNewKomselColor(c)} title={c}
+                        className={`w-7 h-7 rounded-full border-2 transition-all ${newKomselColor === c ? 'border-gray-800 scale-110' : 'border-white shadow'}`}
+                        style={{ backgroundColor: c }} />
+                    ))}
+                  </div>
+                </div>
+                <div className="mt-3 flex items-center gap-2">
+                  <span className="w-3 h-3 rounded-full" style={{ backgroundColor: newKomselColor }} />
+                  <span className="text-sm text-gray-500 font-mono">{newKomselColor}</span>
+                </div>
+              </div>
+            </div>
+            <div className="px-6 py-4 border-t border-gray-100 bg-gray-50 flex justify-end gap-3">
+              <button onClick={() => { setIsKomselModalOpen(false); }}
+                className="px-4 py-2 bg-white border border-gray-200 text-gray-700 rounded-lg text-sm font-medium hover:bg-gray-100 transition-colors">
+                Batal
+              </button>
+              <button onClick={handleAddKomsel} disabled={!newKomselName.trim()}
+                className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${!newKomselName.trim() ? 'bg-gray-300 text-gray-500 cursor-not-allowed' : 'bg-[#8f213e] text-white hover:bg-[#7a1c35] shadow-sm'}`}>
+                Simpan Komsel
               </button>
             </div>
           </div>
@@ -560,10 +652,7 @@ export default function JemaatTablePage() {
 
       {/* QR Code Generator Modal */}
       {selectedMemberForQR && (
-        <QRGenerator 
-          member={selectedMemberForQR} 
-          onClose={() => setSelectedMemberForQR(null)} 
-        />
+        <QRGenerator member={selectedMemberForQR} onClose={() => setSelectedMemberForQR(null)} />
       )}
 
       {/* Delete Confirmation Modal */}
@@ -575,18 +664,10 @@ export default function JemaatTablePage() {
               Apakah Anda yakin ingin menghapus data <span className="font-semibold text-gray-700">{itemToDelete.name}</span>? Tindakan ini tidak dapat dibatalkan.
             </p>
             <div className="flex items-center justify-end gap-3">
-              <button 
-                onClick={() => setItemToDelete(null)}
-                className="px-4 py-2 border border-gray-300 rounded-lg text-sm font-medium text-gray-700 hover:bg-gray-50 transition-colors"
-              >
-                Batal
-              </button>
-              <button 
-                onClick={confirmDelete}
-                className="px-4 py-2 bg-[#8f213e] text-white rounded-lg text-sm font-medium hover:bg-[#7a1c35] transition-colors"
-              >
-                Ya, Hapus
-              </button>
+              <button onClick={() => setItemToDelete(null)}
+                className="px-4 py-2 border border-gray-300 rounded-lg text-sm font-medium text-gray-700 hover:bg-gray-50 transition-colors">Batal</button>
+              <button onClick={confirmDelete}
+                className="px-4 py-2 bg-[#8f213e] text-white rounded-lg text-sm font-medium hover:bg-[#7a1c35] transition-colors">Ya, Hapus</button>
             </div>
           </div>
         </div>
@@ -599,22 +680,18 @@ export default function JemaatTablePage() {
             <div className="h-24 bg-gradient-to-r from-[#8f213e] to-[#cca353]"></div>
             <div className="px-6 pb-6 pt-0 relative flex flex-col items-center">
               <div className="w-24 h-24 rounded-full border-4 border-white overflow-hidden bg-white -mt-12 mb-3 shadow-md">
-                <img 
-                  src={selectedDetailData.photo || `https://ui-avatars.com/api/?name=${encodeURIComponent(selectedDetailData.name)}&background=8f213e&color=fff&size=256`} 
-                  alt={selectedDetailData.name} 
-                  className="w-full h-full object-cover"
-                />
+                <img src={selectedDetailData.photo || `https://ui-avatars.com/api/?name=${encodeURIComponent(selectedDetailData.name)}&background=8f213e&color=fff&size=256`}
+                  alt={selectedDetailData.name} className="w-full h-full object-cover" />
               </div>
-              <h3 className="text-xl font-bold text-gray-900 text-center">{selectedDetailData.name}</h3>
+              <h3 className="text-xl font-bold text-gray-900 text-center">
+                {selectedDetailData.pronouns && <span className="text-gray-500 font-normal mr-1">{selectedDetailData.pronouns}</span>}
+                {selectedDetailData.name}
+              </h3>
               <span className={`mt-2 inline-flex items-center px-3 py-1 rounded-full text-xs font-medium border ${
-                selectedDetailData.category === 'Jemaat' 
-                  ? 'bg-blue-50 text-blue-700 border-blue-200' 
-                  : 'bg-[#cca353]/10 text-[#cca353] border-[#cca353]/30'
-              }`}>
-                {selectedDetailData.category}
-              </span>
+                selectedDetailData.category === 'Jemaat' ? 'bg-blue-50 text-blue-700 border-blue-200' : 'bg-[#cca353]/10 text-[#cca353] border-[#cca353]/30'
+              }`}>{selectedDetailData.category}</span>
 
-              <div className="w-full mt-6 space-y-4">
+              <div className="w-full mt-5 space-y-3">
                 <div>
                   <p className="text-xs font-medium text-gray-500 uppercase tracking-wider mb-1">ID / QR Code</p>
                   <p className="text-sm font-mono text-gray-900 bg-gray-50 py-1.5 px-3 rounded border border-gray-100">{selectedDetailData.qrId}</p>
@@ -623,16 +700,29 @@ export default function JemaatTablePage() {
                   <p className="text-xs font-medium text-gray-500 uppercase tracking-wider mb-1">No. Handphone</p>
                   <p className="text-sm text-gray-900 font-medium">{selectedDetailData.phone}</p>
                 </div>
-                <div>
-                  <p className="text-xs font-medium text-gray-500 uppercase tracking-wider mb-1">Alamat</p>
-                  <p className="text-sm text-gray-900">{selectedDetailData.address}</p>
-                </div>
+                {selectedDetailData.category === 'Jemaat' && (
+                  <div>
+                    <p className="text-xs font-medium text-gray-500 uppercase tracking-wider mb-1">Komsel</p>
+                    {selectedDetailData.nama_komsel ? (
+                      <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-sm font-medium border border-gray-200 text-gray-700 bg-white">
+                        <span className="w-3 h-3 rounded-full" style={{ backgroundColor: selectedDetailData.kode_warna || '#6B7280' }} />
+                        {selectedDetailData.nama_komsel}
+                      </span>
+                    ) : (
+                      <span className="text-sm text-gray-400">Belum ber-KC</span>
+                    )}
+                  </div>
+                )}
+                {selectedDetailData.catatan && (
+                  <div>
+                    <p className="text-xs font-medium text-gray-500 uppercase tracking-wider mb-1">Catatan</p>
+                    <p className="text-sm text-gray-600 bg-yellow-50 border border-yellow-100 rounded-lg p-2">{selectedDetailData.catatan}</p>
+                  </div>
+                )}
               </div>
 
-              <button 
-                onClick={() => setSelectedDetailData(null)}
-                className="mt-8 w-full py-2.5 border border-gray-200 rounded-lg text-sm font-medium text-gray-700 hover:bg-gray-50 transition-colors shadow-sm"
-              >
+              <button onClick={() => setSelectedDetailData(null)}
+                className="mt-6 w-full py-2.5 border border-gray-200 rounded-lg text-sm font-medium text-gray-700 hover:bg-gray-50 transition-colors shadow-sm">
                 Tutup
               </button>
             </div>

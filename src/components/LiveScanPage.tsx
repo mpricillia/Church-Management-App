@@ -1,5 +1,5 @@
 import React from 'react';
-import { useState, MouseEvent, useEffect } from 'react';
+import { useState, MouseEvent, useEffect, useRef, useCallback } from 'react';
 import { Scan, CheckCircle, XCircle, Clock, Plus, X, Search, Unlock } from 'lucide-react';
 
 export default function LiveScanPage() {
@@ -15,6 +15,9 @@ export default function LiveScanPage() {
   const [jemaatData, setJemaatData] = useState<any[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [qrCodeInput, setQrCodeInput] = useState('');
+  const [highlightedIndex, setHighlightedIndex] = useState(-1);
+  const searchInputRef = useRef<HTMLInputElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     const loadJemaat = async () => {
@@ -63,10 +66,21 @@ export default function LiveScanPage() {
   const today = new Date();
   const todayStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
 
-  const filteredEvents = eventsData.filter(e => e.date === todayStr);
+  const todayEvents = eventsData.filter(e => e.date === todayStr && !e.is_locked);
+  const pastUnlockedEvents = eventsData
+    .filter(e => e.date < todayStr && !e.is_locked)
+    .sort((a, b) => b.date.localeCompare(a.date));
 
   const selectedEventObj = selectedEvent ? eventsData.find(e => e.id === selectedEvent) : null;
   const isEventLocked = selectedEventObj ? (selectedEventObj.is_locked === true) : false;
+
+  // Auto-focus search input when modal opens
+  useEffect(() => {
+    if (isManualModalOpen) {
+      setHighlightedIndex(-1);
+      setTimeout(() => searchInputRef.current?.focus(), 50);
+    }
+  }, [isManualModalOpen]);
 
   const [lockConfirmOpen, setLockConfirmOpen] = useState(false);
   const [unlockPromptOpen, setUnlockPromptOpen] = useState(false);
@@ -119,18 +133,45 @@ export default function LiveScanPage() {
         if (window.electronAPI) {
           const data = await window.electronAPI.getAttendance(selectedEvent);
           setHistoryData(data);
+          // Sync indikator besar ke orang terakhir hadir di event ini
+          if (data && data.length > 0) {
+            const latest = data[0];
+            setLatestScan({
+              name: latest.name,
+              category: latest.category,
+              photo: latest.photo || '',
+            });
+            setScanStatus('success');
+          } else {
+            // Event kosong → kembali ke mode idle
+            setLatestScan(null);
+            setScanStatus('idle');
+          }
         } else {
           const saved = localStorage.getItem(`mock_history_${selectedEvent}`);
           if (saved) {
             try {
-              setHistoryData(JSON.parse(saved));
-            } catch(e) { setHistoryData([]); }
+              const parsed = JSON.parse(saved);
+              setHistoryData(parsed);
+              if (parsed.length > 0) {
+                const latest = parsed[0];
+                setLatestScan({ name: latest.name, category: latest.category, photo: latest.photo || '' });
+                setScanStatus('success');
+              } else {
+                setLatestScan(null);
+                setScanStatus('idle');
+              }
+            } catch(e) { setHistoryData([]); setLatestScan(null); setScanStatus('idle'); }
           } else {
             setHistoryData([]);
+            setLatestScan(null);
+            setScanStatus('idle');
           }
         }
       } else {
         setHistoryData([]);
+        setLatestScan(null);
+        setScanStatus('idle');
       }
     };
     loadHistory();
@@ -164,35 +205,25 @@ export default function LiveScanPage() {
       setHistoryData(prev => [result.data, ...prev]);
       setLatestScan({ name: result.data.name, category: result.data.category, photo: result.data.photo || '' });
       setScanStatus('success');
+      // Modal tetap terbuka, reset search, refocus ke input
       setSearchQuery('');
-      setIsManualModalOpen(false);
+      setHighlightedIndex(-1);
+      setTimeout(() => searchInputRef.current?.focus(), 50);
       return;
     }
-    // 1. Validasi Duplikat (Ubah perbandingan menjadi string agar tidak meleset)
     const isDuplicate = historyData.some(item => String(item.id) === String(jemaatItem.id));
-    
     if (isDuplicate) {
       setDuplicateError(`Jemaat atas nama ${jemaatItem.name} sudah terdaftar hadir di event ini!`);
       return;
     }
-
-    // 2. Jika lolos validasi, tambahkan data ke state riwayat
-    const newAttendance = {
-      ...jemaatItem,
-      time: new Date().toISOString()
-    };
+    const newAttendance = { ...jemaatItem, time: new Date().toISOString() };
     setHistoryData(prev => [newAttendance, ...prev]);
-
-    setLatestScan({
-      name: jemaatItem.name,
-      category: jemaatItem.category,
-      photo: jemaatItem.photo || ''
-    });
+    setLatestScan({ name: jemaatItem.name, category: jemaatItem.category, photo: jemaatItem.photo || '' });
     setScanStatus('success');
+    // Modal tetap terbuka, reset search, refocus ke input
     setSearchQuery('');
-
-    // 3. Tutup modal secara eksplisit
-    setIsManualModalOpen(false);
+    setHighlightedIndex(-1);
+    setTimeout(() => searchInputRef.current?.focus(), 50);
   };
 
   const filteredJemaat = searchQuery 
@@ -325,14 +356,23 @@ export default function LiveScanPage() {
           className="border border-gray-200 rounded-lg px-4 py-2.5 bg-white text-gray-700 font-medium focus:outline-none focus:ring-2 focus:ring-gray-200 transition-shadow shadow-sm cursor-pointer min-w-[320px]"
         >
           <option value="">Pilih Event...</option>
-          {filteredEvents.map(evt => (
-            <option key={evt.id} value={evt.id}>{evt.name} - {evt.time}</option>
+          {todayEvents.map(evt => (
+            <option key={evt.id} value={evt.id}>{evt.name} — {evt.time}</option>
           ))}
+          {pastUnlockedEvents.length > 0 && (
+            <optgroup label="— Event Sebelumnya —">
+              {pastUnlockedEvents.map(evt => {
+                const d = new Date(evt.date + 'T00:00:00');
+                const label = d.toLocaleDateString('id-ID', { day: '2-digit', month: 'short', year: 'numeric' });
+                return <option key={evt.id} value={evt.id}>[{label}] {evt.name} — {evt.time || '-'}</option>;
+              })}
+            </optgroup>
+          )}
         </select>
       </div>
 
       {/* Blok Kondisional untuk Konten Bawah */}
-      {(!selectedEvent || !filteredEvents.some(evt => evt.id === selectedEvent)) ? (
+      {!selectedEventObj ? (
         <div className="w-full mt-8 p-12 flex flex-col items-center justify-center bg-gray-50 border-2 border-dashed border-gray-300 rounded-xl">
           <p className="text-gray-500 text-lg font-medium">Silakan pilih event terlebih dahulu untuk memulai absensi.</p>
         </div>
@@ -487,13 +527,16 @@ export default function LiveScanPage() {
 
       {/* Modal Tambah Manual */}
       {isManualModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
+        <div 
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm"
+          onKeyDown={(e) => { if (e.key === 'Escape') { setIsManualModalOpen(false); setSearchQuery(''); setHighlightedIndex(-1); } }}
+        >
           <div className="bg-white rounded-xl w-full max-w-lg shadow-xl border border-gray-100 overflow-hidden flex flex-col">
             {/* Header Modal */}
             <div className="px-6 py-4 border-b border-gray-100 flex items-center justify-between">
               <h3 className="text-lg font-bold text-gray-900">Tambah Manual</h3>
               <button 
-                onClick={() => setIsManualModalOpen(false)}
+                onClick={() => { setIsManualModalOpen(false); setSearchQuery(''); setHighlightedIndex(-1); }}
                 className="text-gray-400 hover:text-gray-900 transition-colors"
               >
                 <X className="w-5 h-5" />
@@ -533,21 +576,55 @@ export default function LiveScanPage() {
                       <Search className="w-5 h-5 text-gray-400" />
                     </div>
                     <input
+                      ref={searchInputRef}
                       type="text"
                       value={searchQuery}
-                      onChange={(e) => setSearchQuery(e.target.value)}
+                      onChange={(e) => { setSearchQuery(e.target.value); setHighlightedIndex(-1); }}
+                      onKeyDown={(e) => {
+                        const items = searchQuery 
+                          ? jemaatData.filter(j => j.name?.toLowerCase().includes(searchQuery.toLowerCase()))
+                          : jemaatData;
+                        if (e.key === 'ArrowDown') {
+                          e.preventDefault();
+                          setHighlightedIndex(prev => Math.min(prev + 1, items.length - 1));
+                          // Scroll item ke view
+                          setTimeout(() => {
+                            const el = listRef.current?.children[Math.min(highlightedIndex + 1, items.length - 1)] as HTMLElement;
+                            el?.scrollIntoView({ block: 'nearest' });
+                          }, 0);
+                        } else if (e.key === 'ArrowUp') {
+                          e.preventDefault();
+                          setHighlightedIndex(prev => Math.max(prev - 1, 0));
+                          setTimeout(() => {
+                            const el = listRef.current?.children[Math.max(highlightedIndex - 1, 0)] as HTMLElement;
+                            el?.scrollIntoView({ block: 'nearest' });
+                          }, 0);
+                        } else if (e.key === 'Enter' && highlightedIndex >= 0 && items[highlightedIndex]) {
+                          e.preventDefault();
+                          handleHadirkanTerdaftar(items[highlightedIndex]);
+                        }
+                      }}
                       placeholder="Ketik Nama Jemaat..."
                       className="w-full pl-10 pr-4 py-2.5 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-gray-200 transition-shadow bg-white text-gray-900"
                     />
                   </div>
                   
                   {/* Search Results */}
-                  <div className="space-y-2 mt-4 max-h-[40vh] overflow-y-auto pr-2">
+                  <div ref={listRef} className="space-y-1 mt-4 max-h-[40vh] overflow-y-auto pr-2">
                     {filteredJemaat.length === 0 ? (
                       <p className="text-center text-sm text-gray-500 py-6">Jemaat tidak ditemukan.</p>
                     ) : (
-                      filteredJemaat.map(jemaat => (
-                        <div key={jemaat.id} className="flex items-center justify-between p-3 border border-gray-100 rounded-lg hover:border-gray-200 hover:bg-gray-50 transition-colors">
+                      filteredJemaat.map((jemaat, idx) => (
+                        <div 
+                          key={jemaat.id} 
+                          className={`flex items-center justify-between p-3 border rounded-lg transition-colors cursor-pointer ${
+                            idx === highlightedIndex 
+                              ? 'border-[#8f213e]/30 bg-[#8f213e]/5 ring-1 ring-[#8f213e]/20' 
+                              : 'border-gray-100 hover:border-gray-200 hover:bg-gray-50'
+                          }`}
+                          onClick={() => handleHadirkanTerdaftar(jemaat)}
+                          onMouseEnter={() => setHighlightedIndex(idx)}
+                        >
                           <div className="flex items-center gap-3">
                             <img 
                               src={jemaat.photo || `https://ui-avatars.com/api/?name=${encodeURIComponent(jemaat.name)}&background=8f213e&color=fff`} 
@@ -569,8 +646,12 @@ export default function LiveScanPage() {
                             </div>
                           </div>
                           <button 
-                            onClick={() => handleHadirkanTerdaftar(jemaat)}
-                            className="bg-[#8f213e] text-white px-4 py-1.5 rounded-lg text-sm font-medium hover:bg-[#7a1c35] transition-colors"
+                            onClick={(e) => { e.stopPropagation(); handleHadirkanTerdaftar(jemaat); }}
+                            className={`px-4 py-1.5 rounded-lg text-sm font-medium transition-colors ${
+                              idx === highlightedIndex 
+                                ? 'bg-[#8f213e] text-white' 
+                                : 'bg-[#8f213e]/90 text-white hover:bg-[#7a1c35]'
+                            }`}
                           >
                             Hadirkan
                           </button>
@@ -578,6 +659,7 @@ export default function LiveScanPage() {
                       ))
                     )}
                   </div>
+                  <p className="text-xs text-gray-400 text-center">↑↓ navigasi • Enter hadirkan • Esc tutup</p>
                 </div>
               ) : (
                 <div className="space-y-4 max-h-[60vh] overflow-y-auto">
@@ -587,6 +669,7 @@ export default function LiveScanPage() {
                       type="text" 
                       value={newName || ""}
                       onChange={(e) => setNewName(e.target.value)}
+                      onKeyDown={(e) => { if (e.key === 'Escape') { setIsManualModalOpen(false); } }}
                       placeholder="Masukkan nama lengkap..."
                       className="w-full border border-gray-200 rounded-lg px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-gray-200 transition-shadow text-gray-900"
                     />

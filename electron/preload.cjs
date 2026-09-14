@@ -37,6 +37,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   deleteJemaat: (id) => ipcRenderer.invoke('jemaat:delete', id),
   exportJemaat: (filters) => ipcRenderer.invoke('jemaat:exportExcel', filters),
   importJemaat: () => ipcRenderer.invoke('jemaat:importExcel'),
+  getAllKomsel: () => ipcRenderer.invoke('komsel:getAll'),
+  createKomsel: (payload) => ipcRenderer.invoke('komsel:create', payload),
   exportBackup: () => ipcRenderer.invoke('app:exportBackup'),
   importBackup: () => ipcRenderer.invoke('app:importBackup'),
 });

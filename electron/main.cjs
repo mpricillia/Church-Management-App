@@ -57,7 +57,7 @@ function normalizeDate(value) {
       return `${year.padStart(4, '0')}-${String(Number(month)).padStart(2, '0')}-${String(Number(day)).padStart(2, '0')}`;
     }
   }
-  throw new Error('Birth_Date must be a valid date');
+  return null; // Return null instead of error to prevent blocking import for invalid dates
 }
 
 function parseJemaatWorkbook(filePath) {
@@ -68,12 +68,17 @@ function parseJemaatWorkbook(filePath) {
   if (!rows.length) throw new Error('The worksheet is empty');
 
   const aliases = {
-    name: ['name', 'nama'],
-    qr: ['qrid', 'qrcodeid', 'qrcode'],
-    category: ['category', 'kategori'],
-    phone: ['phone', 'telepon', 'telephone'],
+    name: ['name', 'nama', 'namajemaat'],
+    qr: ['qrid', 'qrcodeid', 'qrcode', 'idjemaat', 'column1'],
+    category: ['category', 'kategori', 'statusjemaat'],
+    phone: ['phone', 'telepon', 'telephone', 'nohp'],
     address: ['address', 'alamat'],
-    birthDate: ['birthdate', 'tanggallahir', 'dateofbirth']
+    birthDate: ['birthdate', 'tanggallahir', 'dateofbirth', 'tllahir'],
+    pronouns: ['pronouns', 'sapaan'],
+    tanggal_nikah: ['tanggalnikah', 'tlnikah'],
+    tanggal_baptis: ['tanggalbaptis', 'tlbaptis'],
+    catatan: ['catatan', 'notes'],
+    nama_komsel: ['komsel', 'namakomsel']
   };
   const headerIndexes = {};
   rows[0].forEach((header, index) => {
@@ -82,7 +87,8 @@ function parseJemaatWorkbook(filePath) {
       if (accepted.includes(normalized) && headerIndexes[field] === undefined) headerIndexes[field] = index;
     }
   });
-  const missing = Object.entries(aliases).filter(([field]) => headerIndexes[field] === undefined).map(([field]) => field);
+  const required = ['name', 'qr', 'category'];
+  const missing = required.filter(field => headerIndexes[field] === undefined);
   if (missing.length) throw new Error(`Missing required columns: ${missing.join(', ')}`);
 
   return rows.slice(1).filter(row => row.some(value => cellText(value))).map((row, index) => {
@@ -93,14 +99,21 @@ function parseJemaatWorkbook(filePath) {
     const category = ['tetap', 'jemaat', 'jemaat tetap'].includes(categoryValue)
       ? 'Tetap' : categoryValue === 'guest' || categoryValue === 'tamu' ? 'Guest' : null;
     if (!category) throw new Error(`Row ${rowNumber}: Category must be Tetap or Guest`);
-    const birthValue = row[headerIndexes.birthDate];
+    const birthValue = headerIndexes.birthDate !== undefined ? row[headerIndexes.birthDate] : undefined;
+    const nikahValue = headerIndexes.tanggal_nikah !== undefined ? row[headerIndexes.tanggal_nikah] : undefined;
+    const baptisValue = headerIndexes.tanggal_baptis !== undefined ? row[headerIndexes.tanggal_baptis] : undefined;
     return {
       qr_code_id: cellText(row[headerIndexes.qr]),
       name,
       category,
-      phone: cellText(row[headerIndexes.phone]),
-      address: cellText(row[headerIndexes.address]),
-      birth_date: cellText(birthValue) ? normalizeDate(birthValue) : null
+      phone: headerIndexes.phone !== undefined ? cellText(row[headerIndexes.phone]) : null,
+      address: headerIndexes.address !== undefined ? cellText(row[headerIndexes.address]) : null,
+      birth_date: cellText(birthValue) ? normalizeDate(birthValue) : null,
+      pronouns: headerIndexes.pronouns !== undefined ? cellText(row[headerIndexes.pronouns]) : null,
+      tanggal_nikah: cellText(nikahValue) ? normalizeDate(nikahValue) : null,
+      tanggal_baptis: cellText(baptisValue) ? normalizeDate(baptisValue) : null,
+      catatan: headerIndexes.catatan !== undefined ? cellText(row[headerIndexes.catatan]) : null,
+      nama_komsel: headerIndexes.nama_komsel !== undefined ? cellText(row[headerIndexes.nama_komsel]) : null
     };
   }).filter(member => member.name);
 }
@@ -159,12 +172,18 @@ app.whenReady().then(() => {
     if (result.canceled) return { cancelled: true };
     const rows = dbModule.getJemaatForExport(filters);
     const worksheet = XLSX.utils.json_to_sheet(rows.map(row => ({
-      Name: row.name,
-      QR_ID: row.qr_code_id,
-      Category: row.category,
-      Phone: row.phone || '',
-      Address: row.address || '',
-      Birth_Date: row.birth_date || ''
+      'ID Jemaat':    row.qr_code_id || '',
+      'Nama Jemaat':  row.name || '',
+      'Sapaan':       row.pronouns || '',
+      'Status Jemaat': row.category === 'Tetap' ? 'Jemaat' : (row.category || ''),
+      'No. HP':       row.phone || '',
+      'Alamat':       row.address || '',
+      'TL Lahir':     row.birth_date || '',
+      'TL Nikah':     row.tanggal_nikah || '',
+      'TL Baptis':    row.tanggal_baptis || '',
+      'Komsel':       row.nama_komsel || '',
+      'Catatan':      row.catatan || '',
+      'Foto':         row.photo || '',
     })));
     const workbook = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(workbook, worksheet, 'Jemaat');
@@ -205,6 +224,8 @@ app.whenReady().then(() => {
   ipcMain.handle('jemaat:create', response((e, member) => dbModule.createJemaat(member)));
   ipcMain.handle('jemaat:update', response((e, id, member) => dbModule.updateJemaat(id, member)));
   ipcMain.handle('jemaat:delete', response((e, id) => dbModule.deleteJemaat(id)));
+  ipcMain.handle('komsel:getAll', response(() => dbModule.getAllKomsel()));
+  ipcMain.handle('komsel:create', response((e, payload) => dbModule.createKomsel(payload)));
 
   createWindow();
 
