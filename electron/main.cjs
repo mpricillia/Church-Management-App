@@ -1,9 +1,13 @@
-const { app, BrowserWindow, ipcMain, dialog } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell } = require('electron');
 const path = require('path');
 const fs = require('fs');
 require('dotenv').config({ path: path.join(__dirname, '../.env') });
 const XLSX = require('xlsx');
 const dbModule = require('./database.cjs');
+
+// Data (database, cache, lock) disimpan di folder terpisah dari aplikasi lama
+// supaya kedua aplikasi bisa terpasang & berjalan bersamaan tanpa bentrok.
+app.setPath('userData', path.join(app.getPath('appData'), 'RockLumajangV2'));
 
 const isDev = process.env.NODE_ENV === 'development';
 
@@ -78,7 +82,8 @@ function parseJemaatWorkbook(filePath) {
     tanggal_nikah: ['tanggalnikah', 'tlnikah'],
     tanggal_baptis: ['tanggalbaptis', 'tlbaptis'],
     catatan: ['catatan', 'notes'],
-    nama_komsel: ['komsel', 'namakomsel']
+    nama_komsel: ['komsel', 'namakomsel'],
+    gender: ['gender', 'jeniskelamin', 'jk', 'lp']
   };
   const headerIndexes = {};
   rows[0].forEach((header, index) => {
@@ -113,7 +118,8 @@ function parseJemaatWorkbook(filePath) {
       tanggal_nikah: cellText(nikahValue) ? normalizeDate(nikahValue) : null,
       tanggal_baptis: cellText(baptisValue) ? normalizeDate(baptisValue) : null,
       catatan: headerIndexes.catatan !== undefined ? cellText(row[headerIndexes.catatan]) : null,
-      nama_komsel: headerIndexes.nama_komsel !== undefined ? cellText(row[headerIndexes.nama_komsel]) : null
+      nama_komsel: headerIndexes.nama_komsel !== undefined ? cellText(row[headerIndexes.nama_komsel]) : null,
+      gender: headerIndexes.gender !== undefined ? cellText(row[headerIndexes.gender]) : null
     };
   }).filter(member => member.name);
 }
@@ -176,6 +182,7 @@ app.whenReady().then(() => {
       'Nama Jemaat':  row.name || '',
       'Sapaan':       row.pronouns || '',
       'Status Jemaat': row.category === 'Tetap' ? 'Jemaat' : (row.category || ''),
+      'L/P':          row.gender || '',
       'No. HP':       row.phone || '',
       'Alamat':       row.address || '',
       'TL Lahir':     row.birth_date || '',
@@ -183,7 +190,7 @@ app.whenReady().then(() => {
       'TL Baptis':    row.tanggal_baptis || '',
       'Komsel':       row.nama_komsel || '',
       'Catatan':      row.catatan || '',
-      'Foto':         row.photo || '',
+      'Foto':         row.photo && row.photo.length > 50 ? 'Ada' : 'Tidak Ada',
     })));
     const workbook = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(workbook, worksheet, 'Jemaat');
@@ -226,6 +233,32 @@ app.whenReady().then(() => {
   ipcMain.handle('jemaat:delete', response((e, id) => dbModule.deleteJemaat(id)));
   ipcMain.handle('komsel:getAll', response(() => dbModule.getAllKomsel()));
   ipcMain.handle('komsel:create', response((e, payload) => dbModule.createKomsel(payload)));
+  ipcMain.handle('app:openExternal', async (e, url) => {
+    try {
+      await shell.openExternal(url);
+      return { success: true };
+    } catch (err) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  ipcMain.handle('app:selectDirectory', async (e) => {
+    const mainWindow = BrowserWindow.getAllWindows()[0];
+    const result = await dialog.showOpenDialog(mainWindow, { properties: ['openDirectory'] });
+    if (result.canceled) return { success: false };
+    return { success: true, data: result.filePaths[0] };
+  });
+
+  ipcMain.handle('app:saveBase64Image', async (e, filepath, dataUrl) => {
+    try {
+      const base64Data = dataUrl.replace(/^data:image\/png;base64,/, "");
+      fs.writeFileSync(filepath, base64Data, 'base64');
+      return { success: true };
+    } catch (err) {
+      return { success: false, error: err.message };
+    }
+  });
+
 
   createWindow();
 

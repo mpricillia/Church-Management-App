@@ -1,6 +1,11 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('electronAPI', {
+  // Utils
+  openExternal: (url) => ipcRenderer.invoke('app:openExternal', url),
+  selectDirectory: () => ipcRenderer.invoke('app:selectDirectory'),
+  saveBase64Image: (filepath, dataUrl) => ipcRenderer.invoke('app:saveBase64Image', filepath, dataUrl),
+  
   // Events
   getEvents: () => ipcRenderer.invoke('get-events'),
   saveEvents: (events) => ipcRenderer.invoke('save-events', events),

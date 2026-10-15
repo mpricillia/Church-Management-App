@@ -95,7 +95,15 @@ export default function QRGenerator({ member, onClose }: QRGeneratorProps) {
     const message = encodeURIComponent(
       `Shalom ${member.name}! 👋\n\nBerikut QR Code kamu untuk absensi GBI ROCK Lumajang.\nSimpan dan tunjukkan ke petugas scanner saat hadir ibadah/event. ☺️\n\nID: *${member.qrId}*`
     );
-    setTimeout(() => window.open(`https://wa.me/${waNumber}?text=${message}`, '_blank'), 700);
+    // Menggunakan api.whatsapp.com lebih stabil di desktop/web ketimbang wa.me
+    const url = `https://api.whatsapp.com/send?phone=${waNumber}&text=${message}`;
+    setTimeout(() => {
+      if (window.electronAPI && window.electronAPI.openExternal) {
+        window.electronAPI.openExternal(url);
+      } else {
+        window.open(url, '_blank');
+      }
+    }, 700);
   };
 
   const renderCard = (forPrint: boolean) => (
@@ -112,7 +120,7 @@ export default function QRGenerator({ member, onClose }: QRGeneratorProps) {
         </div>
 
         {/* Teks Data Jemaat */}
-        <div className="absolute flex flex-col justify-between" style={{ left: '57%', top: '42.8%', width: '38%', height: '33%', fontSize: forPrint ? '18px' : 'clamp(10px, 1.8vw, 16px)', color: '#ffffff' }}>
+        <div className="absolute flex flex-col justify-between" style={{ left: '57%', top: '42.8%', width: '38%', height: '33%', fontSize: forPrint ? '18px' : 'clamp(10px, 1.8vw, 16px)', color: '#ffffff', WebkitPrintColorAdjust: 'exact', printColorAdjust: 'exact' }}>
           <div style={{ fontWeight: 700 }}>{member.name}</div>
           <div style={{ fontWeight: 700 }}>{member.qrId}</div>
           <div style={{ fontWeight: 500 }}>{formatDate(member.dob)}</div>

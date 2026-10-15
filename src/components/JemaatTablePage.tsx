@@ -1,6 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Download, Upload, Plus, Search, Pencil, Trash2, QrCode, X, Camera } from 'lucide-react';
+import { Download, Upload, Plus, Search, Pencil, Trash2, QrCode, X, Camera, Image as ImageIcon } from 'lucide-react';
 import QRGenerator from './QRGenerator';
+// @ts-ignore
+import QRCode from 'qrcode';
 
 interface KomselData {
   id: number;
@@ -58,6 +60,7 @@ export default function JemaatTablePage() {
   const [formCategory, setFormCategory] = useState<'Jemaat' | 'Guest'>('Jemaat');
   const [formPhoto, setFormPhoto] = useState('');
   const [formPronouns, setFormPronouns] = useState('');
+  const [formGender, setFormGender] = useState('');
   const [formTanggalNikah, setFormTanggalNikah] = useState('');
   const [formTanggalBaptis, setFormTanggalBaptis] = useState('');
   const [formCatatan, setFormCatatan] = useState('');
@@ -80,7 +83,7 @@ export default function JemaatTablePage() {
 
   const resetForm = () => {
     setFormName(''); setFormPhone(''); setFormDob(''); setFormAddress('');
-    setFormCategory('Jemaat'); setFormPhoto(''); setFormPronouns('');
+    setFormCategory('Jemaat'); setFormPhoto(''); setFormPronouns(''); setFormGender('');
     setFormTanggalNikah(''); setFormTanggalBaptis(''); setFormCatatan('');
     setFormKomselId(null);
   };
@@ -94,6 +97,7 @@ export default function JemaatTablePage() {
       setFormAddress(member.address || '');
       setFormCategory(member.category || 'Jemaat');
       setFormPhoto(member.photo || '');
+      setFormGender(member.gender || '');
       
       let pronoun = member.pronouns || '';
       const pLower = pronoun.toLowerCase().replace(/[^a-z]/g, '');
@@ -110,7 +114,7 @@ export default function JemaatTablePage() {
       setInitialFormData({
         name: member.name || '', phone: member.phone || '', dob: member.dob || '',
         address: member.address || '', category: member.category || 'Jemaat',
-        photo: member.photo || '', pronouns: member.pronouns || '',
+        photo: member.photo || '', pronouns: member.pronouns || '', gender: member.gender || '',
         tanggal_nikah: member.tanggal_nikah || '', tanggal_baptis: member.tanggal_baptis || '',
         catatan: member.catatan || '', komsel_id: member.komsel_id || null,
       });
@@ -123,14 +127,15 @@ export default function JemaatTablePage() {
   };
 
   const generateNewId = (category: string, dataArray: any[]) => {
-    const prefix = category === 'Jemaat' ? 'JM' : 'GS';
-    const filtered = dataArray.filter((item: any) => item.qrId && item.qrId.startsWith(prefix + '-'));
+    const prefix = category === 'Jemaat' ? 'ROCKLMJ' : 'GS';
+    const filtered = dataArray.filter((item: any) => item.qrId && item.qrId.startsWith(prefix));
     let maxNum = 0;
     filtered.forEach((item: any) => {
-      const numPart = parseInt(item.qrId.split('-')[1], 10);
+      const numPartStr = item.qrId.replace(prefix, ''); // ambil angkanya saja, e.g. "0001"
+      const numPart = parseInt(numPartStr, 10);
       if (!isNaN(numPart) && numPart > maxNum) maxNum = numPart;
     });
-    return `${prefix}-${(maxNum + 1).toString().padStart(4, '0')}`;
+    return `${prefix}${(maxNum + 1).toString().padStart(4, '0')}`;
   };
 
   const buildMemberPayload = (qrId?: string) => ({
@@ -142,6 +147,7 @@ export default function JemaatTablePage() {
     category: formCategory === 'Jemaat' ? 'Tetap' : formCategory,
     photo: formPhoto,
     pronouns: formPronouns || null,
+    gender: formGender || null,
     tanggal_nikah: formTanggalNikah || null,
     tanggal_baptis: formTanggalBaptis || null,
     catatan: formCatatan || null,
@@ -149,6 +155,11 @@ export default function JemaatTablePage() {
   });
 
   const handleSimpan = async () => {
+    if (!formGender) {
+      alert('Jenis Kelamin wajib diisi.');
+      return;
+    }
+
     if (modalMode === 'edit' && editingId) {
       const existingQrId = jemaatData.find(item => item.id === editingId)?.qrId;
       const payload = buildMemberPayload(existingQrId);
@@ -210,7 +221,8 @@ export default function JemaatTablePage() {
       formName !== initialFormData.name || formPhone !== initialFormData.phone ||
       formDob !== initialFormData.dob || formAddress !== initialFormData.address ||
       formCategory !== initialFormData.category || formPhoto !== initialFormData.photo ||
-      formPronouns !== initialFormData.pronouns || formTanggalNikah !== initialFormData.tanggal_nikah ||
+      formPronouns !== initialFormData.pronouns || formGender !== initialFormData.gender ||
+      formTanggalNikah !== initialFormData.tanggal_nikah ||
       formTanggalBaptis !== initialFormData.tanggal_baptis || formCatatan !== initialFormData.catatan ||
       formKomselId !== initialFormData.komsel_id
     );
@@ -264,12 +276,89 @@ export default function JemaatTablePage() {
     if (!result.success) { alert(result.error || 'Import gagal.'); return; }
     
     // Refresh both jemaat and komsel lists to get newly added komsels
-    const [members, komsels] = await Promise.all([
+    const [jemaatResult, komselResult] = await Promise.all([
       window.electronAPI.getAllJemaat(),
-      window.electronAPI.getAllKomsel()
+      window.electronAPI.getAllKomsel(),
     ]);
-    if (members.success) setJemaatData((members.data || []).map(toUiMember));
-    if (komsels.success) setKomselList(komsels.data || []);
+    if (jemaatResult.success) setJemaatData((jemaatResult.data || []).map(toUiMember));
+    if (komselResult.success) setKomselList(komselResult.data || []);
+  };
+
+  const [exportQRProgress, setExportQRProgress] = useState({ current: 0, total: 0, isOpen: false });
+
+  const handleExportQRCodes = async () => {
+    if (!window.electronAPI) return;
+    const dirResult = await window.electronAPI.selectDirectory();
+    if (!dirResult.success || !dirResult.data) return;
+
+    setExportQRProgress({ current: 0, total: filteredData.length, isOpen: true });
+
+    const qrSize = 380;
+    const padding = 40;
+    const nameAreaHeight = 80;
+
+    for (let i = 0; i < filteredData.length; i++) {
+      const member = filteredData[i];
+      try {
+        const qrDataUrl = await QRCode.toDataURL(member.qrId, { 
+          margin: 1, 
+          width: qrSize, 
+          color: { dark: '#111827', light: '#ffffff' } 
+        });
+        
+        const outputCanvas = document.createElement('canvas');
+        outputCanvas.width = qrSize + padding * 2;
+        outputCanvas.height = qrSize + padding * 2 + nameAreaHeight;
+        const ctx = outputCanvas.getContext('2d');
+        if (!ctx) continue;
+
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, outputCanvas.width, outputCanvas.height);
+        
+        ctx.shadowColor = 'rgba(0,0,0,0.07)';
+        ctx.shadowBlur = 16;
+        ctx.fillStyle = '#ffffff';
+        ctx.beginPath();
+        ctx.roundRect(padding - 10, padding - 10, qrSize + 20, qrSize + 20, 14);
+        ctx.fill();
+        ctx.shadowBlur = 0;
+
+        const img = new Image();
+        img.src = qrDataUrl;
+        await new Promise(r => { img.onload = r; });
+        ctx.drawImage(img, padding, padding);
+
+        ctx.strokeStyle = '#e5e7eb';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(padding, qrSize + padding + 18);
+        ctx.lineTo(qrSize + padding, qrSize + padding + 18);
+        ctx.stroke();
+
+        ctx.fillStyle = '#111827';
+        ctx.font = `bold ${Math.round(qrSize * 0.07)}px "Segoe UI", Arial, sans-serif`;
+        ctx.textAlign = 'center';
+        ctx.fillText(member.name, outputCanvas.width / 2, qrSize + padding + 46);
+
+        ctx.fillStyle = '#6b7280';
+        ctx.font = `${Math.round(qrSize * 0.045)}px "Courier New", monospace`;
+        ctx.fillText(member.qrId, outputCanvas.width / 2, qrSize + padding + 68);
+
+        const safeName = member.name.replace(/[^a-zA-Z0-9 ]/g, '').trim().replace(/\s+/g, '-') || `jemaat-${member.qrId}`;
+        const finalDataUrl = outputCanvas.toDataURL('image/png');
+        const filepath = `${dirResult.data}\\QR-${safeName}.png`;
+        
+        await window.electronAPI.saveBase64Image(filepath, finalDataUrl);
+      } catch (e) {
+        console.error('Error generating QR for', member.name, e);
+      }
+      setExportQRProgress({ current: i + 1, total: filteredData.length, isOpen: true });
+    }
+
+    setTimeout(() => {
+      setExportQRProgress({ current: 0, total: 0, isOpen: false });
+      alert('Export QR Code massal berhasil!');
+    }, 500);
   };
 
   const inputClass = "w-full border border-gray-200 rounded-lg px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-gray-200 transition-shadow text-gray-900 bg-white";
@@ -281,6 +370,9 @@ export default function JemaatTablePage() {
       <div className="flex items-center justify-between">
         <h2 className="text-2xl font-bold text-gray-900 tracking-tight">Database Jemaat</h2>
         <div className="flex items-center gap-3">
+          <button onClick={handleExportQRCodes} className="flex items-center gap-2 px-4 py-2 bg-white border border-[#8f213e] text-[#8f213e] rounded-lg text-sm font-medium hover:bg-gray-50 transition-colors shadow-sm">
+            <QrCode className="w-4 h-4" /> Export QR
+          </button>
           <button onClick={handleExportExcel} className="flex items-center gap-2 px-4 py-2 bg-white border border-[#8f213e] text-[#8f213e] rounded-lg text-sm font-medium hover:bg-gray-50 transition-colors shadow-sm">
             <Upload className="w-4 h-4" /> Export XLSX
           </button>
@@ -292,6 +384,24 @@ export default function JemaatTablePage() {
           </button>
         </div>
       </div>
+
+      {/* Modal Progress Export QR */}
+      {exportQRProgress.isOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
+          <div className="bg-white rounded-xl w-full max-w-sm shadow-xl p-6 flex flex-col items-center">
+            <QrCode className="w-12 h-12 text-[#8f213e] mb-4 animate-pulse" />
+            <h3 className="text-lg font-bold text-gray-900 mb-2">Mengekspor QR Code...</h3>
+            <p className="text-sm text-gray-500 mb-4 text-center">Tunggu sebentar, sedang menyimpan gambar QR Code ke folder yang dipilih.</p>
+            <div className="w-full bg-gray-100 rounded-full h-3 mb-2 overflow-hidden">
+              <div 
+                className="bg-[#8f213e] h-3 rounded-full transition-all duration-300" 
+                style={{ width: `${(exportQRProgress.current / exportQRProgress.total) * 100}%` }}
+              />
+            </div>
+            <p className="text-sm font-medium text-gray-700">{exportQRProgress.current} dari {exportQRProgress.total} diekspor</p>
+          </div>
+        </div>
+      )}
 
       {/* Search & Filter */}
       <div className="flex items-center gap-3 flex-wrap">
@@ -334,6 +444,7 @@ export default function JemaatTablePage() {
               <tr className="bg-gray-50 border-b border-gray-100">
                 <th className="py-4 px-4 text-xs font-semibold text-gray-500 uppercase tracking-wider whitespace-nowrap">ID</th>
                 <th className="py-4 px-4 text-xs font-semibold text-gray-500 uppercase tracking-wider whitespace-nowrap">Nama Lengkap</th>
+                <th className="py-4 px-4 text-xs font-semibold text-gray-500 uppercase tracking-wider whitespace-nowrap">L/P</th>
                 <th className="py-4 px-4 text-xs font-semibold text-gray-500 uppercase tracking-wider whitespace-nowrap">No. HP</th>
                 <th className="py-4 px-4 text-xs font-semibold text-gray-500 uppercase tracking-wider whitespace-nowrap">Tgl Lahir</th>
                 <th className="py-4 px-4 text-xs font-semibold text-gray-500 uppercase tracking-wider whitespace-nowrap">Tgl Nikah</th>
@@ -390,6 +501,7 @@ export default function JemaatTablePage() {
                       </div>
                     </div>
                   </td>
+                  <td className="py-3 px-4 text-sm text-gray-600 whitespace-nowrap">{row.gender || '-'}</td>
                   <td className="py-3 px-4 text-sm text-gray-600 whitespace-nowrap">{row.phone}</td>
                   <td className="py-3 px-4 text-sm text-gray-600 whitespace-nowrap">
                     {row.dob && row.dob !== '-'
@@ -494,8 +606,8 @@ export default function JemaatTablePage() {
                   placeholder="Masukkan nama lengkap..." className={inputClass} />
               </div>
 
-              {/* Pronouns + Kategori */}
-              <div className="grid grid-cols-2 gap-4">
+              {/* Pronouns + Kategori + Gender */}
+              <div className="grid grid-cols-3 gap-4">
                 <div>
                   <label className={labelClass}>Sapaan</label>
                   <select value={formPronouns} onChange={(e) => setFormPronouns(e.target.value)} className={inputClass}>
@@ -503,6 +615,14 @@ export default function JemaatTablePage() {
                     <option value="Bapak">Bapak</option>
                     <option value="Ibu">Ibu</option>
                     <option value="Sdr/i">Sdr/i</option>
+                  </select>
+                </div>
+                <div>
+                  <label className={labelClass}>L/P <span className="text-red-500">*</span></label>
+                  <select value={formGender} onChange={(e) => setFormGender(e.target.value)} className={inputClass}>
+                    <option value="">— Pilih —</option>
+                    <option value="L">Laki-laki</option>
+                    <option value="P">Perempuan</option>
                   </select>
                 </div>
                 <div>
@@ -695,6 +815,12 @@ export default function JemaatTablePage() {
                 <div>
                   <p className="text-xs font-medium text-gray-500 uppercase tracking-wider mb-1">ID / QR Code</p>
                   <p className="text-sm font-mono text-gray-900 bg-gray-50 py-1.5 px-3 rounded border border-gray-100">{selectedDetailData.qrId}</p>
+                </div>
+                <div>
+                  <p className="text-xs font-medium text-gray-500 uppercase tracking-wider mb-1">Jenis Kelamin</p>
+                  <p className="text-sm text-gray-900 font-medium">
+                    {selectedDetailData.gender === 'L' ? 'Laki-laki' : selectedDetailData.gender === 'P' ? 'Perempuan' : '-'}
+                  </p>
                 </div>
                 <div>
                   <p className="text-xs font-medium text-gray-500 uppercase tracking-wider mb-1">No. Handphone</p>

@@ -36,20 +36,22 @@ export default function LiveScanPage() {
 
   useEffect(() => {
     const loadEvents = async () => {
+      let dataToUse: any[] = [];
       if (window.electronAPI) {
-        const data = await window.electronAPI.getEvents();
-        setEventsData(data);
-        return;
+        dataToUse = await window.electronAPI.getEvents();
+      } else {
+        const savedEvents = localStorage.getItem('mock_event_data') || "[]";
+        try {
+          dataToUse = JSON.parse(savedEvents);
+        } catch(e) { }
       }
+      setEventsData(dataToUse);
       
-      let savedEvents = localStorage.getItem('mock_event_data');
-      if (!savedEvents) {
-        savedEvents = "[]";
+      // Jika event yang dipilih tidak ada di daftar event (karena dihapus), reset ke empty string
+      if (selectedEvent && dataToUse && !dataToUse.some(e => e.id === selectedEvent)) {
+        setSelectedEvent('');
+        localStorage.removeItem('livescan_selected_event');
       }
-      try {
-        const parsed = JSON.parse(savedEvents);
-        setEventsData(parsed);
-      } catch(e) {}
     };
 
     loadEvents();
@@ -141,7 +143,7 @@ export default function LiveScanPage() {
               category: latest.category,
               photo: latest.photo || '',
             });
-            setScanStatus('success');
+            setScanStatus('idle');
           } else {
             // Event kosong → kembali ke mode idle
             setLatestScan(null);
@@ -156,7 +158,7 @@ export default function LiveScanPage() {
               if (parsed.length > 0) {
                 const latest = parsed[0];
                 setLatestScan({ name: latest.name, category: latest.category, photo: latest.photo || '' });
-                setScanStatus('success');
+                setScanStatus('idle');
               } else {
                 setLatestScan(null);
                 setScanStatus('idle');
@@ -188,6 +190,7 @@ export default function LiveScanPage() {
   const [newDob, setNewDob] = useState('');
   const [newAddress, setNewAddress] = useState('');
   const [newCategory, setNewCategory] = useState<'Jemaat' | 'Guest'>('Jemaat');
+  const [newGender, setNewGender] = useState('');
 
   const getFormattedTime = () => {
     const d = new Date();
@@ -205,6 +208,7 @@ export default function LiveScanPage() {
       setHistoryData(prev => [result.data, ...prev]);
       setLatestScan({ name: result.data.name, category: result.data.category, photo: result.data.photo || '' });
       setScanStatus('success');
+      setTimeout(() => setScanStatus('idle'), 1500);
       // Modal tetap terbuka, reset search, refocus ke input
       setSearchQuery('');
       setHighlightedIndex(-1);
@@ -220,6 +224,7 @@ export default function LiveScanPage() {
     setHistoryData(prev => [newAttendance, ...prev]);
     setLatestScan({ name: jemaatItem.name, category: jemaatItem.category, photo: jemaatItem.photo || '' });
     setScanStatus('success');
+    setTimeout(() => setScanStatus('idle'), 1500);
     // Modal tetap terbuka, reset search, refocus ke input
     setSearchQuery('');
     setHighlightedIndex(-1);
@@ -230,18 +235,44 @@ export default function LiveScanPage() {
     ? jemaatData.filter(j => j.name.toLowerCase().includes(searchQuery.toLowerCase()))
     : jemaatData;
 
+  const generateNewId = (category: string, dataArray: any[]) => {
+    const prefix = category === 'Jemaat' ? 'ROCKLMJ' : 'GS';
+    const filtered = dataArray.filter((item: any) => {
+      const q = item.qrId || item.qr_code_id;
+      return q && q.startsWith(prefix);
+    });
+    
+    let maxNum = 0;
+    filtered.forEach((item: any) => {
+      const q = item.qrId || item.qr_code_id;
+      const numPartStr = q.replace(prefix, '').replace('-', '');
+      const numPart = parseInt(numPartStr, 10);
+      if (!isNaN(numPart) && numPart > maxNum) {
+        maxNum = numPart;
+      }
+    });
+    
+    return `${prefix}${(maxNum + 1).toString().padStart(4, '0')}`;
+  };
+
   const handleSimpanManual = async (e: MouseEvent) => {
     e.preventDefault();
+    if (manualTab === 'baru' && !newGender) {
+      alert('Jenis kelamin wajib diisi.');
+      return;
+    }
     const submittedName = newName || 'Tanpa Nama';
     if (window.electronAPI) {
       if (manualTab === 'cari') return;
+      const newQrId = generateNewId(newCategory, jemaatData);
       const memberResult = await window.electronAPI.createJemaat({
-        qr_code_id: `GS-${Date.now()}`,
+        qr_code_id: newQrId,
         name: submittedName,
         phone: newPhone || null,
         birth_date: newDob || null,
         address: newAddress || null,
-        category: newCategory === 'Jemaat' ? 'Tetap' : newCategory
+        category: newCategory === 'Jemaat' ? 'Tetap' : newCategory,
+        gender: newGender || null
       });
       if (!memberResult.success) { setDuplicateError(memberResult.error || 'Gagal menyimpan jemaat.'); return; }
       const attendanceResult = await window.electronAPI.manualAddAttendance({ event_id: selectedEvent, jemaat_id: memberResult.data.id });
@@ -250,7 +281,8 @@ export default function LiveScanPage() {
       setHistoryData(prev => [attendanceResult.data, ...prev]);
       setLatestScan({ name: attendanceResult.data.name, category: attendanceResult.data.category, photo: '' });
       setScanStatus('success');
-      setNewName(''); setNewPhone(''); setNewDob(''); setNewAddress(''); setIsManualModalOpen(false);
+      setTimeout(() => setScanStatus('idle'), 1500);
+      setNewName(''); setNewPhone(''); setNewDob(''); setNewAddress(''); setNewGender(''); setIsManualModalOpen(false);
       return;
     }
     const isDuplicate = historyData.some(item => item.name === submittedName);
@@ -264,21 +296,6 @@ export default function LiveScanPage() {
 
     if (manualTab === 'baru') {
       let currentJemaatData = jemaatData;
-      
-      const generateNewId = (category: string, dataArray: any[]) => {
-        const prefix = category === 'Jemaat' ? 'JM' : 'GS';
-        const filtered = dataArray.filter((item: any) => item.qrId && item.qrId.startsWith(prefix + '-'));
-        
-        let maxNum = 0;
-        filtered.forEach((item: any) => {
-          const numPart = parseInt(item.qrId.split('-')[1], 10);
-          if (!isNaN(numPart) && numPart > maxNum) {
-            maxNum = numPart;
-          }
-        });
-        
-        return `${prefix}-${(maxNum + 1).toString().padStart(4, '0')}`;
-      };
 
       const newJemaat = {
         id: Date.now(),
@@ -287,7 +304,8 @@ export default function LiveScanPage() {
         phone: newPhone || '-',
         dob: newDob || '-',
         address: newAddress || '-',
-        category: submittedCategory
+        category: submittedCategory,
+        gender: newGender || '-'
       };
       
       currentJemaatData = [newJemaat, ...currentJemaatData];
@@ -312,6 +330,7 @@ export default function LiveScanPage() {
       photo: ''
     });
     setScanStatus('success');
+    setTimeout(() => setScanStatus('idle'), 1500);
     
     // reset form
     setNewName('');
@@ -319,6 +338,7 @@ export default function LiveScanPage() {
     setNewDob('');
     setNewAddress('');
     setNewCategory('Jemaat');
+    setNewGender('');
     setIsManualModalOpen(false);
   };
 
@@ -335,14 +355,14 @@ export default function LiveScanPage() {
     if (!result.success) {
       setScanStatus('error');
       setDuplicateError(result.error || 'Scan gagal.');
-      setTimeout(() => setScanStatus('idle'), 2000);
+      setTimeout(() => setScanStatus('idle'), 1500);
       return;
     }
     setHistoryData(prev => [result.data, ...prev]);
     setLatestScan({ name: result.data.name, category: result.data.category, photo: result.data.photo || '' });
     setScanStatus('success');
     setQrCodeInput('');
-    setTimeout(() => setScanStatus('idle'), 2000);
+    setTimeout(() => setScanStatus('idle'), 1500);
   };
 
   return (
@@ -471,6 +491,7 @@ export default function LiveScanPage() {
                   <tr className="bg-gray-50 border-b border-gray-100">
                     <th className="py-3 px-6 text-xs font-semibold text-gray-500 uppercase tracking-wider">No</th>
                     <th className="py-3 px-6 text-xs font-semibold text-gray-500 uppercase tracking-wider">Nama</th>
+                    <th className="py-3 px-6 text-xs font-semibold text-gray-500 uppercase tracking-wider">L/P</th>
                     <th className="py-3 px-6 text-xs font-semibold text-gray-500 uppercase tracking-wider">Kategori</th>
                     <th className="py-3 px-6 text-xs font-semibold text-gray-500 uppercase tracking-wider text-right">Jam Kedatangan</th>
                   </tr>
@@ -488,6 +509,9 @@ export default function LiveScanPage() {
                           />
                           <span>{row.name}</span>
                         </div>
+                      </td>
+                      <td className="py-3 px-6 text-sm text-gray-600">
+                        {row.gender || '-'}
                       </td>
                       <td className="py-3 px-6 text-sm">
                         <span className={`inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium border ${
@@ -705,16 +729,30 @@ export default function LiveScanPage() {
                       className="w-full border border-gray-200 rounded-lg px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-gray-200 transition-shadow text-gray-900 resize-none"
                     />
                   </div>
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1.5">Tipe Kedatangan</label>
-                    <select 
-                      value={newCategory}
-                      onChange={(e) => setNewCategory(e.target.value as 'Jemaat' | 'Guest')}
-                      className="w-full border border-gray-200 rounded-lg px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-gray-200 transition-shadow text-gray-900 bg-white"
-                    >
-                      <option value="Guest">Guest / Tamu</option>
-                      <option value="Jemaat">Jemaat</option>
-                    </select>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1.5">L/P <span className="text-red-500">*</span></label>
+                      <select 
+                        value={newGender}
+                        onChange={(e) => setNewGender(e.target.value)}
+                        className="w-full border border-gray-200 rounded-lg px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-gray-200 transition-shadow text-gray-900 bg-white"
+                      >
+                        <option value="">— Pilih —</option>
+                        <option value="L">Laki-laki</option>
+                        <option value="P">Perempuan</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1.5">Tipe Kedatangan</label>
+                      <select 
+                        value={newCategory}
+                        onChange={(e) => setNewCategory(e.target.value as 'Jemaat' | 'Guest')}
+                        className="w-full border border-gray-200 rounded-lg px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-gray-200 transition-shadow text-gray-900 bg-white"
+                      >
+                        <option value="Guest">Guest / Tamu</option>
+                        <option value="Jemaat">Jemaat</option>
+                      </select>
+                    </div>
                   </div>
                   <div className="pt-2">
                     <button 

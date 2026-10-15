@@ -69,16 +69,19 @@ export default function EventCalendarPage() {
         };
       });
     } else {
-      // MODE TAMBAH BARU: generate ID dengan auto-increment
+      // MODE TAMBAH BARU: generate ID dengan auto-increment per tanggal acara
+      const datePart = formDate ? formDate.replace(/-/g, '') : new Date().toISOString().split('T')[0].replace(/-/g, '');
+      const prefix = `#E${datePart}`;
+      
       let lastNum = 0;
       events.forEach(ev => {
-        const match = ev.id.match(/#EV-(\d+)/);
-        if (match) {
-          const num = parseInt(match[1], 10);
-          if (num > lastNum) lastNum = num;
+        if (ev.id && ev.id.startsWith(prefix)) {
+          const numStr = ev.id.replace(prefix, '');
+          const num = parseInt(numStr, 10);
+          if (!isNaN(num) && num > lastNum) lastNum = num;
         }
       });
-      const newId = `#EV-${String(lastNum + 1).padStart(3, '0')}`;
+      const newId = `${prefix}${String(lastNum + 1).padStart(3, '0')}`;
       const dateFormatted = formDate
         ? new Date(formDate).toLocaleDateString('id-ID', {
             weekday: 'long', year: 'numeric', month: 'long', day: 'numeric'

@@ -68,6 +68,13 @@ export default function LaporanPage() {
   const currentEvent = eventsData.find(e => e.id === selectedEventId);
   const isLocked = currentEvent?.is_locked === true;
 
+  const formatWib = (raw: any) => {
+    if (!raw) return '-';
+    const d = new Date(raw);
+    if (isNaN(d.getTime())) return String(raw);
+    return d.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', second: '2-digit', timeZone: 'Asia/Jakarta' }) + ' WIB';
+  };
+
   const handleExportPDF = () => {
     if (!isLocked || !selectedEventId) return;
 
@@ -84,13 +91,17 @@ export default function LaporanPage() {
     doc.text(`Event: ${eventName}`, 14, 32);
     doc.text(`Tanggal: ${eventDate}`, 14, 38);
 
-    const tableColumn = ["No.", "Waktu Masuk", "Nama Lengkap", "Kategori"];
+    const tableColumn = ["No.", "Waktu Masuk", "Nama Lengkap", "L/P", "Kategori"];
     const tableRows = eventAttendanceData.map((data, index) => [
       index + 1,
-      data.time,
+      formatWib(data.scan_timestamp || data.time),
       data.name,
+      data.gender || '-',
       data.category
     ]);
+
+    const pdfMale = eventAttendanceData.filter(d => d.gender === 'L').length;
+    const pdfFemale = eventAttendanceData.filter(d => d.gender === 'P').length;
 
     autoTable(doc, {
       head: [tableColumn],
@@ -101,6 +112,13 @@ export default function LaporanPage() {
       styles: { fontSize: 10 },
       alternateRowStyles: { fillColor: [249, 250, 251] }
     });
+
+    const finalY = (doc as any).lastAutoTable?.finalY ?? 45;
+    doc.setFontSize(11);
+    doc.setTextColor(40);
+    doc.text(`Total Laki-laki: ${pdfMale}`, 14, finalY + 10);
+    doc.text(`Total Perempuan: ${pdfFemale}`, 14, finalY + 17);
+    doc.text(`Total Hadir: ${eventAttendanceData.length}`, 14, finalY + 24);
 
     doc.save(`Laporan_${eventName.replace(/\s+/g, '_')}.pdf`);
   };
@@ -139,6 +157,8 @@ export default function LaporanPage() {
   const totalHadir = eventAttendanceData.length;
   const totalJemaat = eventAttendanceData.filter(d => d.category === 'Jemaat').length;
   const totalGuest = eventAttendanceData.filter(d => d.category === 'Guest').length;
+  const totalMale = eventAttendanceData.filter(d => d.gender === 'L').length;
+  const totalFemale = eventAttendanceData.filter(d => d.gender === 'P').length;
 
   const handleExportExcel = () => {
     if (!isLocked || !selectedEventId) return;
@@ -146,10 +166,17 @@ export default function LaporanPage() {
     
     const worksheetData = eventAttendanceData.map((data, index) => ({
       'No.': index + 1,
-      'Waktu Masuk': data.time,
+      'Waktu Masuk': formatWib(data.scan_timestamp || data.time),
       'Nama Lengkap': data.name,
+      'L/P': data.gender || '',
       'Kategori': data.category
     }));
+
+    // Tambahkan baris total
+    worksheetData.push({ 'No.': '', 'Waktu Masuk': '', 'Nama Lengkap': '', 'L/P': '', 'Kategori': '' } as any);
+    worksheetData.push({ 'No.': '', 'Waktu Masuk': 'Total Laki-laki:', 'Nama Lengkap': totalMale, 'L/P': '', 'Kategori': '' } as any);
+    worksheetData.push({ 'No.': '', 'Waktu Masuk': 'Total Perempuan:', 'Nama Lengkap': totalFemale, 'L/P': '', 'Kategori': '' } as any);
+    worksheetData.push({ 'No.': '', 'Waktu Masuk': 'Total Hadir:', 'Nama Lengkap': totalHadir, 'L/P': '', 'Kategori': '' } as any);
 
     const worksheet = XLSX.utils.json_to_sheet(worksheetData);
     const workbook = XLSX.utils.book_new();
@@ -387,32 +414,50 @@ export default function LaporanPage() {
           </div>
 
           {/* Summary Cards */}
-          <div className="grid grid-cols-3 gap-6 shrink-0">
-            <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100 flex items-center gap-4">
-              <div className="w-12 h-12 rounded-full bg-blue-50 flex items-center justify-center border border-blue-100 shrink-0">
-                <Users className="w-6 h-6 text-blue-600" />
+          <div className="grid grid-cols-5 gap-4 shrink-0">
+            <div className="bg-white p-5 rounded-xl shadow-sm border border-gray-100 flex items-center gap-4">
+              <div className="w-10 h-10 rounded-full bg-blue-50 flex items-center justify-center border border-blue-100 shrink-0">
+                <Users className="w-5 h-5 text-blue-600" />
               </div>
               <div>
-                <p className="text-sm font-medium text-gray-500 mb-1">Total Hadir</p>
-                <h3 className="text-3xl font-bold text-gray-900">{!selectedEventId ? '-' : totalHadir}</h3>
+                <p className="text-xs font-medium text-gray-500 mb-1">Total Hadir</p>
+                <h3 className="text-2xl font-bold text-gray-900">{!selectedEventId ? '-' : totalHadir}</h3>
               </div>
             </div>
-            <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100 flex items-center gap-4">
-              <div className="w-12 h-12 rounded-full bg-green-50 flex items-center justify-center border border-green-100 shrink-0">
-                <UserCheck className="w-6 h-6 text-green-600" />
+            <div className="bg-white p-5 rounded-xl shadow-sm border border-gray-100 flex items-center gap-4">
+              <div className="w-10 h-10 rounded-full bg-green-50 flex items-center justify-center border border-green-100 shrink-0">
+                <UserCheck className="w-5 h-5 text-green-600" />
               </div>
               <div>
-                <p className="text-sm font-medium text-gray-500 mb-1">Jemaat Tetap</p>
-                <h3 className="text-3xl font-bold text-gray-900">{!selectedEventId ? '-' : totalJemaat}</h3>
+                <p className="text-xs font-medium text-gray-500 mb-1">Jemaat Tetap</p>
+                <h3 className="text-2xl font-bold text-gray-900">{!selectedEventId ? '-' : totalJemaat}</h3>
               </div>
             </div>
-            <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100 flex items-center gap-4">
-              <div className="w-12 h-12 rounded-full bg-orange-50 flex items-center justify-center border border-orange-100 shrink-0">
-                <UserPlus className="w-6 h-6 text-orange-600" />
+            <div className="bg-white p-5 rounded-xl shadow-sm border border-gray-100 flex items-center gap-4">
+              <div className="w-10 h-10 rounded-full bg-orange-50 flex items-center justify-center border border-orange-100 shrink-0">
+                <UserPlus className="w-5 h-5 text-orange-600" />
               </div>
               <div>
-                <p className="text-sm font-medium text-gray-500 mb-1">Guest / Tamu</p>
-                <h3 className="text-3xl font-bold text-gray-900">{!selectedEventId ? '-' : totalGuest}</h3>
+                <p className="text-xs font-medium text-gray-500 mb-1">Guest</p>
+                <h3 className="text-2xl font-bold text-gray-900">{!selectedEventId ? '-' : totalGuest}</h3>
+              </div>
+            </div>
+            <div className="bg-white p-5 rounded-xl shadow-sm border border-gray-100 flex items-center gap-4">
+              <div className="w-10 h-10 rounded-full bg-indigo-50 flex items-center justify-center border border-indigo-100 shrink-0">
+                <span className="text-indigo-600 font-bold">L</span>
+              </div>
+              <div>
+                <p className="text-xs font-medium text-gray-500 mb-1">Laki-laki</p>
+                <h3 className="text-2xl font-bold text-gray-900">{!selectedEventId ? '-' : totalMale}</h3>
+              </div>
+            </div>
+            <div className="bg-white p-5 rounded-xl shadow-sm border border-gray-100 flex items-center gap-4">
+              <div className="w-10 h-10 rounded-full bg-pink-50 flex items-center justify-center border border-pink-100 shrink-0">
+                <span className="text-pink-600 font-bold">P</span>
+              </div>
+              <div>
+                <p className="text-xs font-medium text-gray-500 mb-1">Perempuan</p>
+                <h3 className="text-2xl font-bold text-gray-900">{!selectedEventId ? '-' : totalFemale}</h3>
               </div>
             </div>
           </div>
@@ -425,6 +470,7 @@ export default function LaporanPage() {
                   <tr className="bg-gray-50 border-b border-gray-100">
                     <th className="py-4 px-6 text-xs font-semibold text-gray-500 uppercase tracking-wider w-48">Jam Kedatangan</th>
                     <th className="py-4 px-6 text-xs font-semibold text-gray-500 uppercase tracking-wider">Nama Lengkap</th>
+                    <th className="py-4 px-6 text-xs font-semibold text-gray-500 uppercase tracking-wider">L/P</th>
                     <th className="py-4 px-6 text-xs font-semibold text-gray-500 uppercase tracking-wider">Kategori</th>
                   </tr>
                 </thead>
@@ -438,8 +484,9 @@ export default function LaporanPage() {
                   ) : (
                     eventAttendanceData.map((row) => (
                       <tr key={row.id} className="hover:bg-gray-50/50 transition-colors">
-                        <td className="py-4 px-6 text-sm text-gray-600 font-mono">{row.time}</td>
+                        <td className="py-4 px-6 text-sm text-gray-600 font-mono">{formatWib(row.scan_timestamp || row.time)}</td>
                         <td className="py-4 px-6 text-sm font-medium text-gray-900">{row.name}</td>
+                        <td className="py-4 px-6 text-sm text-gray-600">{row.gender || '-'}</td>
                         <td className="py-4 px-6 text-sm">
                           <span className={`inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium border ${
                             row.category === 'Jemaat' 
@@ -453,6 +500,15 @@ export default function LaporanPage() {
                     ))
                   )}
                 </tbody>
+                {selectedEventId && eventAttendanceData.length > 0 && (
+                  <tfoot>
+                    <tr className="bg-gray-50 border-t border-gray-200">
+                      <td colSpan={4} className="py-4 px-6 text-sm font-semibold text-gray-800">
+                        Total Hadir: {totalHadir} orang — Laki-laki: {totalMale} | Perempuan: {totalFemale}
+                      </td>
+                    </tr>
+                  </tfoot>
+                )}
               </table>
             </div>
           </div>

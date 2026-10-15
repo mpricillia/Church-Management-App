@@ -11,3 +11,5 @@ coverage/
 debug_db.cjs
 testdb.cjs
 *.exe
+rocklumajang-backup*.json
+new card/

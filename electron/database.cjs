@@ -109,12 +109,16 @@ function initDb() {
   addColumnIfMissing('events', 'title', 'TEXT');
   addColumnIfMissing('events', 'created_at', 'TEXT');
 
-  // Kolom baru untuk fitur Komsel
+  // Kolom baru untuk fitur Komsel & Gender
   addColumnIfMissing('jemaat', 'pronouns', 'VARCHAR');
   addColumnIfMissing('jemaat', 'tanggal_nikah', 'TEXT');
   addColumnIfMissing('jemaat', 'tanggal_baptis', 'TEXT');
   addColumnIfMissing('jemaat', 'catatan', 'TEXT');
   addColumnIfMissing('jemaat', 'komsel_id', 'INTEGER REFERENCES komsel(id) ON DELETE SET NULL');
+  addColumnIfMissing('jemaat', 'gender', 'VARCHAR');
+
+  db.prepare("UPDATE jemaat SET gender = 'L' WHERE pronouns = 'Bapak' AND gender IS NULL").run();
+  db.prepare("UPDATE jemaat SET gender = 'P' WHERE pronouns = 'Ibu' AND gender IS NULL").run();
 
   db.prepare("UPDATE jemaat SET qr_code_id = qrId WHERE qr_code_id IS NULL AND qrId IS NOT NULL").run();
   db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_jemaat_qr_code_id ON jemaat(qr_code_id) WHERE qr_code_id IS NOT NULL');
@@ -165,6 +169,56 @@ function initDb() {
   }
 }
 
+// Menyeragamkan ID format lama pada data backup sebelum di-restore.
+// Jemaat: ROCKLMJxxxx | Guest: ROCKLMJxxxx / GSxxxx | Event: #EYYYYMMDDnnn
+function normalizeBackupIds(data) {
+  const EVENT_RE = /^#E\d{8}\d{3}$/;
+  const getQr = (m) => m.qr_code_id || m.qrId;
+
+  // --- Jemaat ---
+  let maxJm = 0, maxGs = 0;
+  for (const m of data.jemaat) {
+    const q = String(getQr(m) || '');
+    let r = q.match(/^ROCKLMJ(\d+)$/); if (r) maxJm = Math.max(maxJm, +r[1]);
+    r = q.match(/^GS(\d{1,6})$/); if (r) maxGs = Math.max(maxGs, +r[1]);
+  }
+  for (const m of data.jemaat) {
+    const q = String(getQr(m) || '');
+    const isGuest = m.category === 'Guest';
+    const ok = isGuest ? /^(ROCKLMJ|GS)\d+$/.test(q) : /^ROCKLMJ\d+$/.test(q);
+    if (ok) continue;
+    const next = isGuest
+      ? `GS${String(++maxGs).padStart(4, '0')}`
+      : `ROCKLMJ${String(++maxJm).padStart(4, '0')}`;
+    m.qr_code_id = next;
+    m.qrId = next;
+  }
+
+  // --- Event ---
+  const idMap = {};
+  const perDate = {};
+  for (const e of data.events) {
+    if (EVENT_RE.test(e.id)) {
+      const k = e.id.slice(2, 10);
+      perDate[k] = Math.max(perDate[k] || 0, +e.id.slice(10));
+    }
+  }
+  for (const e of data.events) {
+    if (EVENT_RE.test(e.id)) continue;
+    const k = String(e.date || '').replace(/-/g, '').slice(0, 8);
+    if (k.length !== 8) continue;
+    perDate[k] = (perDate[k] || 0) + 1;
+    const newId = `#E${k}${String(perDate[k]).padStart(3, '0')}`;
+    idMap[e.id] = newId;
+    e.id = newId;
+  }
+  if (Object.keys(idMap).length) {
+    for (const a of data.attendances || []) if (idMap[a.event_id]) a.event_id = idMap[a.event_id];
+    for (const a of data.attendance || []) if (idMap[a.eventId]) a.eventId = idMap[a.eventId];
+  }
+  return data;
+}
+
 module.exports = {
   initDb,
   getEvents: () => db.prepare('SELECT * FROM events').all().map(e => ({...e, is_locked: e.is_locked === 1})),
@@ -196,11 +250,22 @@ module.exports = {
       WHERE a.event_id = ?
       GROUP BY CASE WHEN j.category IN ('Tetap', 'Jemaat') THEN 'Jemaat Tetap' ELSE 'Guest' END
     `).all(eventId);
+    const genderRows = db.prepare(`
+      SELECT j.gender, COUNT(a.id) AS total
+      FROM attendances a
+      INNER JOIN jemaat j ON j.id = a.jemaat_id
+      WHERE a.event_id = ?
+      GROUP BY j.gender
+    `).all(eventId);
+    
     const totals = Object.fromEntries(rows.map(row => [row.category, row.total]));
+    const genderTotals = Object.fromEntries(genderRows.map(row => [row.gender || 'Unknown', row.total]));
+    
     return {
       event_id: event.id, event_title: event.title, event_date: event.date,
       total_attendance: rows.reduce((sum, row) => sum + row.total, 0),
-      by_category: { 'Jemaat Tetap': totals['Jemaat Tetap'] || 0, Guest: totals.Guest || 0 }
+      by_category: { 'Jemaat Tetap': totals['Jemaat Tetap'] || 0, Guest: totals.Guest || 0 },
+      by_gender: { 'L': genderTotals['L'] || 0, 'P': genderTotals['P'] || 0 }
     };
   },
   getJemaatHistory: (jemaatId) => {
@@ -220,7 +285,9 @@ module.exports = {
     let query = `
       SELECT id, name, qr_code_id, category, SUM(total) as total_attendance
       FROM (
-        SELECT j.id, j.name, COALESCE(j.qr_code_id, j.qrId) AS qr_code_id, j.category, COUNT(a.id) as total
+        SELECT j.id, j.name, COALESCE(j.qr_code_id, j.qrId) AS qr_code_id, 
+               CASE WHEN j.category = 'Tetap' THEN 'Jemaat' ELSE j.category END AS category, 
+               COUNT(a.id) as total
         FROM jemaat j
         JOIN attendances a ON j.id = a.jemaat_id
         JOIN events e ON a.event_id = e.id
@@ -298,10 +365,13 @@ module.exports = {
     return result.changes > 0;
   },
   deleteEvent: (id) => {
-    const event = db.prepare('SELECT is_locked FROM events WHERE id = ?').get(id);
+    const event = db.prepare('SELECT id, is_locked FROM events WHERE id = ?').get(id);
     if (!event) throw new Error('Event not found');
-    if (event.is_locked === 1) throw new Error('Locked events cannot be deleted');
-    return db.prepare('DELETE FROM events WHERE id = ?').run(id).changes > 0;
+    return db.transaction(() => {
+      db.prepare('DELETE FROM attendances WHERE event_id = ?').run(id);
+      db.prepare('DELETE FROM attendance WHERE eventId = ?').run(id);
+      return db.prepare('DELETE FROM events WHERE id = ?').run(id).changes > 0;
+    })();
   },
   saveEvents: (events) => {
     const insert = db.prepare('INSERT OR REPLACE INTO events (id, name, date, dateFormatted, time, location, speaker, is_locked) VALUES (?, ?, ?, ?, ?, ?, ?, ?)');
@@ -317,8 +387,9 @@ module.exports = {
     dob: member.dob || member.birth_date
   })),
   getBackupData: () => ({
-    version: 1,
+    version: 2,
     exportedAt: new Date().toISOString(),
+    komsel: db.prepare('SELECT * FROM komsel').all(),
     events: db.prepare('SELECT * FROM events').all(),
     jemaat: db.prepare('SELECT * FROM jemaat').all(),
     attendance: db.prepare('SELECT * FROM attendance').all(),
@@ -328,18 +399,32 @@ module.exports = {
     if (!data || !Array.isArray(data.events) || !Array.isArray(data.jemaat)) {
       throw new Error('Invalid backup format');
     }
+    normalizeBackupIds(data);
     db.prepare('DELETE FROM attendance').run();
     db.prepare('DELETE FROM attendances').run();
     db.prepare('DELETE FROM events').run();
     db.prepare('DELETE FROM jemaat').run();
+    // Komsel: dipulihkan hanya jika backup memuatnya (backup lama tidak punya)
+    if (Array.isArray(data.komsel) && data.komsel.length > 0) {
+      db.prepare('DELETE FROM komsel').run();
+      const insertKomsel = db.prepare('INSERT INTO komsel (id, nama_komsel, kode_warna) VALUES (?, ?, ?)');
+      for (const k of data.komsel) insertKomsel.run(k.id, k.nama_komsel, k.kode_warna || '#6B7280');
+    }
+    const validKomselIds = new Set(db.prepare('SELECT id FROM komsel').all().map(k => k.id));
     const insertMember = db.prepare(`INSERT INTO jemaat
-      (id, qr_code_id, qrId, name, category, phone, address, birth_date, created_at, photo)
-      VALUES (@id, @qr_code_id, @qrId, @name, @category, @phone, @address, @birth_date, @created_at, @photo)`);
+      (id, qr_code_id, qrId, name, category, phone, address, birth_date, created_at, photo,
+       pronouns, tanggal_nikah, tanggal_baptis, catatan, komsel_id, gender)
+      VALUES (@id, @qr_code_id, @qrId, @name, @category, @phone, @address, @birth_date, @created_at, @photo,
+       @pronouns, @tanggal_nikah, @tanggal_baptis, @catatan, @komsel_id, @gender)`);
     for (const member of data.jemaat) insertMember.run({
       id: member.id, qr_code_id: member.qr_code_id || member.qrId || null, qrId: member.qrId || member.qr_code_id || null,
       name: member.name, category: member.category === 'Jemaat' ? 'Tetap' : member.category || 'Tetap',
       phone: member.phone || null, address: member.address || null, birth_date: member.birth_date || member.dob || null,
-      created_at: member.created_at || new Date().toISOString(), photo: member.photo || null
+      created_at: member.created_at || new Date().toISOString(), photo: member.photo || null,
+      pronouns: member.pronouns || null, tanggal_nikah: member.tanggal_nikah || null,
+      tanggal_baptis: member.tanggal_baptis || null, catatan: member.catatan || null,
+      komsel_id: validKomselIds.has(member.komsel_id) ? member.komsel_id : null,
+      gender: member.gender || null
     });
     const insertEvent = db.prepare(`INSERT INTO events
       (id, title, name, date, dateFormatted, time, location, speaker, is_locked, created_at)
@@ -353,6 +438,11 @@ module.exports = {
     for (const row of data.attendance || []) insertAttendance.run(row);
     const insertCanonical = db.prepare('INSERT INTO attendances (id, event_id, jemaat_id, scan_timestamp) VALUES (@id, @event_id, @jemaat_id, @scan_timestamp)');
     for (const row of data.attendances || []) insertCanonical.run(row);
+    
+    // Otomatis terjemahkan sapaan lama ke gender
+    db.prepare("UPDATE jemaat SET gender = 'L' WHERE pronouns = 'Bapak' AND gender IS NULL").run();
+    db.prepare("UPDATE jemaat SET gender = 'P' WHERE pronouns = 'Ibu' AND gender IS NULL").run();
+
     return { restored: true };
   })(backup),
   getJemaatForExport: (filters) => getJemaatForExport(filters),
@@ -365,11 +455,11 @@ module.exports = {
     return true;
   },
   getAttendance: (eventId) => db.prepare(`
-    SELECT id, eventId, jemaatId, name, category, photo, time FROM attendance WHERE eventId = ?
+    SELECT id, eventId, jemaatId, name, category, photo, time, NULL AS gender FROM attendance WHERE eventId = ?
     UNION ALL
     SELECT a.id, a.event_id AS eventId, a.jemaat_id AS jemaatId, j.name,
       CASE WHEN j.category = 'Tetap' THEN 'Jemaat' ELSE j.category END AS category,
-      j.photo, a.scan_timestamp AS time
+      j.photo, a.scan_timestamp AS time, j.gender
     FROM attendances a INNER JOIN jemaat j ON j.id = a.jemaat_id WHERE a.event_id = ?
     ORDER BY time DESC
   `).all(eventId, eventId),
@@ -437,15 +527,15 @@ module.exports = {
   createJemaat: (member) => {
     const result = db.prepare(`
       INSERT INTO jemaat (qr_code_id, qrId, name, category, phone, address, birth_date, photo,
-        pronouns, tanggal_nikah, tanggal_baptis, catatan, komsel_id)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        pronouns, tanggal_nikah, tanggal_baptis, catatan, komsel_id, gender)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       member.qr_code_id, member.qr_code_id, member.name,
       member.category || 'Tetap', member.phone || null, member.address || null,
       member.birth_date || null, member.photo || null,
       member.pronouns || null, member.tanggal_nikah || null,
       member.tanggal_baptis || null, member.catatan || null,
-      member.komsel_id || null
+      member.komsel_id || null, member.gender || null
     );
     return db.prepare(`
       SELECT j.*, COALESCE(j.qr_code_id, j.qrId) AS qr_code_id, k.nama_komsel, k.kode_warna
@@ -455,14 +545,14 @@ module.exports = {
   updateJemaat: (id, member) => db.prepare(`
     UPDATE jemaat SET qr_code_id = ?, qrId = ?, name = ?, category = ?, phone = ?,
       address = ?, birth_date = ?, photo = ?,
-      pronouns = ?, tanggal_nikah = ?, tanggal_baptis = ?, catatan = ?, komsel_id = ?
+      pronouns = ?, tanggal_nikah = ?, tanggal_baptis = ?, catatan = ?, komsel_id = ?, gender = ?
     WHERE id = ?
   `).run(
     member.qr_code_id, member.qr_code_id, member.name, member.category || 'Tetap',
     member.phone || null, member.address || null, member.birth_date || null, member.photo || null,
     member.pronouns || null, member.tanggal_nikah || null,
     member.tanggal_baptis || null, member.catatan || null,
-    member.komsel_id || null, id
+    member.komsel_id || null, member.gender || null, id
   ).changes > 0,
   deleteJemaat: (id) => db.prepare('DELETE FROM jemaat WHERE id = ?').run(id).changes > 0,
   importJemaat: (members) => db.transaction((rows) => {
@@ -494,10 +584,10 @@ module.exports = {
     };
 
     const insert = db.prepare(`INSERT INTO jemaat
-      (qr_code_id, qrId, name, category, phone, address, birth_date, pronouns, tanggal_nikah, tanggal_baptis, catatan, komsel_id)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+      (qr_code_id, qrId, name, category, phone, address, birth_date, pronouns, tanggal_nikah, tanggal_baptis, catatan, komsel_id, gender)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
     const update = db.prepare(`UPDATE jemaat SET qr_code_id = ?, qrId = ?, name = ?, category = ?,
-      phone = ?, address = ?, birth_date = ?, pronouns = ?, tanggal_nikah = ?, tanggal_baptis = ?, catatan = ?, komsel_id = ? WHERE id = ?`);
+      phone = ?, address = ?, birth_date = ?, pronouns = ?, tanggal_nikah = ?, tanggal_baptis = ?, catatan = ?, komsel_id = ?, gender = ? WHERE id = ?`);
     
     const result = { totalInserted: 0, totalUpdated: 0, errors: [] };
     for (let index = 0; index < rows.length; index += 1) {
@@ -513,7 +603,7 @@ module.exports = {
           qrCodeId, qrCodeId, member.name, member.category, 
           member.phone || null, member.address || null, member.birth_date || null,
           member.pronouns || null, member.tanggal_nikah || null, member.tanggal_baptis || null,
-          member.catatan || null, komselId
+          member.catatan || null, komselId, member.gender || null
         ];
 
         if (existing) {
@@ -538,6 +628,7 @@ function getJemaatForExport({ category = '', birthMonth = '' } = {}) {
       j.name,
       j.pronouns,
       j.category,
+      j.gender,
       j.phone,
       j.address,
       j.birth_date,
@@ -576,8 +667,8 @@ function recordAttendance(eventId, memberIdentifier, identifierType) {
     if (event.is_locked === 1) throw new Error('Attendance scanning is disabled for this locked event');
 
     const member = identifierType === 'qr'
-      ? db.prepare('SELECT id, name, category, qr_code_id FROM jemaat WHERE qr_code_id = ? OR qrId = ?').get(memberIdentifier, memberIdentifier)
-      : db.prepare('SELECT id, name, category, qr_code_id FROM jemaat WHERE id = ?').get(memberIdentifier);
+      ? db.prepare('SELECT id, name, category, qr_code_id, photo, gender FROM jemaat WHERE qr_code_id = ? OR qrId = ?').get(memberIdentifier, memberIdentifier)
+      : db.prepare('SELECT id, name, category, qr_code_id, photo, gender FROM jemaat WHERE id = ?').get(memberIdentifier);
     if (!member) throw new Error('Jemaat not found');
 
     const duplicate = db.prepare('SELECT id FROM attendances WHERE event_id = ? AND jemaat_id = ?').get(eventId, member.id);
@@ -593,6 +684,9 @@ function recordAttendance(eventId, memberIdentifier, identifierType) {
       qr_code_id: member.qr_code_id,
       name: member.name,
       category: member.category === 'Tetap' ? 'Jemaat' : member.category,
+      photo: member.photo || '',
+      gender: member.gender || null,
+      time: scanTimestamp,
       scan_timestamp: scanTimestamp
     };
   })();

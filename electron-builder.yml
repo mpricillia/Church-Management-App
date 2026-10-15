@@ -1,5 +1,5 @@
-appId: "com.rocklumajang.app"
-productName: "RockLumajang"
+appId: "com.rocklumajang.app.v2"
+productName: "RockLumajang V2"
 directories:
   output: "release"
 files:
@@ -9,10 +9,12 @@ files:
 win:
   target: "nsis"
   icon: "build/icon.ico"
+  artifactName: "RockLumajang-V2-Setup-${version}.${ext}"
 nsis:
   oneClick: false
   allowToChangeInstallationDirectory: true
   createDesktopShortcut: true
   createStartMenuShortcut: true
+  shortcutName: "RockLumajang V2"
   installerIcon: "build/icon.ico"
   uninstallerIcon: "build/icon.ico"
